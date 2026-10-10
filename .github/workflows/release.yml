@@ -1,0 +1,145 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+
+# 1. Broadly secure the workflow by defaulting all tokens to read-only
+permissions: read-all
+
+jobs:
+  build:
+    name: Build & Test Artifacts
+    runs-on: ubuntu-26.04
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout Code
+        # Pinned to actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        # Pinned to actions/setup-go v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Verify Environment & OS
+        run: |
+          lsb_release -a
+          go version
+
+      # Same targets as a local `make`, so releases are held to the same bar as CI.
+      - name: Check Formatting, go fix & Vet
+        run: make check
+
+      - name: Scan For Known Vulnerabilities
+        run: make vuln
+
+      - name: Run Tests
+        run: make test
+
+      - name: Get Version
+        id: version
+        run: |
+          VERSION=$(grep -oP 'Version\s*=\s*"\K[^"]+' internal/config/config.go)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION"
+
+      - name: Compile Static Linux Binaries
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/hmj-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/hmj-linux-arm64 .
+
+      - name: Package Release Tarballs
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          for arch in amd64 arm64; do
+            pkg="dist/hmj-${VERSION}-linux-${arch}"
+            mkdir -p "${pkg}/hmj"
+            install -m 0755 "dist/hmj-linux-${arch}" "${pkg}/hmj/hmj"
+
+            # Checksum of the binary inside the archive
+            (
+              cd "${pkg}/hmj" \
+                && sha256sum hmj > SHA256SUMS.txt
+            )
+            tar -czf "${pkg}.tar.gz" -C "${pkg}" hmj
+          done
+
+          # Checksums for verifying downloaded tarballs
+          (
+            cd dist \
+              && sha256sum hmj-*.tar.gz > SHA256SUMS.txt
+          )
+
+      - name: Extract Changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ -f CHANGELOG.md ]; then
+            awk "/^## \\[*${VERSION}\\]*/{flag=1; next} /^## /{flag=0} /^\\[[0-9a-zA-Z._-]+\\]:/{flag=0} flag" CHANGELOG.md > RELEASE_NOTES.md
+          fi
+
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "Release v${VERSION}" > RELEASE_NOTES.md
+          fi
+
+      - name: Upload Build Artifacts & Notes
+        # Pinned to actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hmj-${{ steps.version.outputs.version }}-linux
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+            RELEASE_NOTES.md
+          retention-days: 7
+
+  publish:
+    name: Create Draft Release
+    runs-on: ubuntu-26.04
+    needs: build
+    
+    # 2. Grant write permissions strictly to this isolated job
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Build Artifacts
+        # Pinned to actions/download-artifact v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: hmj-${{ needs.build.outputs.version }}-linux
+          path: release-artifacts
+
+      - name: Create Draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          
+          # Run the creation entirely within the downloaded artifact directory
+          cd release-artifacts
+
+          # Flatten dist/ if download-artifact preserved the subdirectory
+          if [ -d dist ]; then
+            mv dist/* .
+            rmdir dist 2>/dev/null || true
+          fi
+
+          ls -la
+
+          gh release create "v${VERSION}" \
+            *.tar.gz \
+            SHA256SUMS.txt \
+            --target "${{ github.sha }}" \
+            --title "v${VERSION}" \
+            --notes-file RELEASE_NOTES.md \
+            --draft

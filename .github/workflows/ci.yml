@@ -1,0 +1,37 @@
+name: CI
+
+# Manual only: run it from the Actions tab ("Run workflow"); pushes and pull requests do not trigger it.
+on:
+  workflow_dispatch:
+
+# Default every token to read-only; this workflow only reads the repository.
+permissions: read-all
+
+jobs:
+  test:
+    name: Format, vet, test & vulnerability scan
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Code
+        # Pinned to actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        # Pinned to actions/setup-go v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # Same targets as a local `make`, so CI and the Makefile cannot drift apart.
+      - name: Check Formatting, go fix & Vet
+        run: make check
+
+      - name: Scan For Known Vulnerabilities
+        run: make vuln
+
+      - name: Run Tests
+        run: make test

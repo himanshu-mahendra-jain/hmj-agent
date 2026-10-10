@@ -1,0 +1,24 @@
+{
+  "accessibility": false,
+  "providers": {
+    "openai": {
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "$OPENAI_API_KEY",
+      "models": [
+        {
+          "id": "gpt-6-luna"
+        }
+      ]
+    },
+    "gemini": {
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "apiKey": "$GEMINI_API_KEY",
+      "api": "gemini",
+      "models": [
+        {
+          "id": "gemini-3.8-flash"
+        }
+      ]
+    }
+  }
+}

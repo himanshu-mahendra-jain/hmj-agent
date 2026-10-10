@@ -1,0 +1,12 @@
+# Compiled binaries & build outputs
+/hmj
+*.so
+dist/
+
+# Test coverage & profiling artifacts
+*.out
+*.prof
+/.cover/
+
+# HMJ runtime session data & configuration
+.hmj/
