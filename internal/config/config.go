@@ -30,7 +30,7 @@ var (
 )
 
 // Version is the application version reported by --version.
-const Version = "1.0.2"
+const Version = "1.0.3"
 
 // VersionString returns Version with the VCS revision recorded in the build info, if any,
 // e.g. "1.0.0 (1eea0d8)" or "1.0.0 (1eea0d8, dirty)".

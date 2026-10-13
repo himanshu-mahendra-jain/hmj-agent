@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-13
+
 ### Changes
 
-* Drop `data:` and `vbscript:` links, like `javascript:` links, when fetching web pages.
-* Redact secrets in tool error messages written to the diagnostic log (`HMJ_LOG`), as the tool arguments already were.
+* Drop `data:` and `vbscript:` links, like `javascript:` links, when fetching web pages (#2).
+* Redact secrets in tool error messages written to the diagnostic log (`HMJ_LOG`), as the tool arguments already were (#2).
 
 ## [1.0.2] - 2026-10-13
 
