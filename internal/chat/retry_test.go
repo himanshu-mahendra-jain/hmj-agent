@@ -4,8 +4,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"hmj-agent/internal/logging"
+	"hmj-agent/internal/redact"
 )
 
 func TestRetryAndRateLimitParsing(t *testing.T) {
@@ -109,5 +116,48 @@ func TestIsRetryableNetError(t *testing.T) {
 	}
 	if IsRetryableNetError(errors.New("permission denied")) {
 		t.Fatal("permission denied should not be retryable")
+	}
+}
+
+// The diagnostic log keeps the whole provider error body, so it must go through redaction:
+// a configured key and recognised token formats echoed back by a provider never reach the file.
+func TestHTTPErrorBodyLogIsRedacted(t *testing.T) {
+	const configuredKey = "proxy-key-0123456789abcdef" // matches no token format; masked only once registered
+	const bearerToken = "abcdefghijklmnopqrstuvwxyz0123"
+	const anthropicKey = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	redact.Register(configuredKey)
+
+	logPath := filepath.Join(t.TempDir(), "hmj.log")
+	closeLog, err := logging.Init(logPath)
+	if err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := logging.Init(""); err != nil {
+			t.Errorf("reset logger: %v", err)
+		}
+	})
+
+	body := "invalid key " + configuredKey + "; echoed Authorization: Bearer " + bearerToken + "; key " + anthropicKey
+	resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+	if _, _, err := httpErrorFromResponse(resp); err == nil {
+		t.Fatal("expected an error for a 401 response")
+	}
+	if err := closeLog(); err != nil {
+		t.Fatalf("close log: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	log := string(data)
+	if !strings.Contains(log, `"msg":"http error body"`) || !strings.Contains(log, redact.Placeholder) {
+		t.Fatalf("expected a redacted http error body record, got:\n%s", log)
+	}
+	for _, secret := range []string{configuredKey, bearerToken, anthropicKey} {
+		if strings.Contains(log, secret) {
+			t.Errorf("secret %q leaked into the log:\n%s", secret, log)
+		}
 	}
 }

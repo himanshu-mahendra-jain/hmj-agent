@@ -1,6 +1,11 @@
 name: Build Release
 
+# Runs when a version tag (e.g. v1.0.2) is pushed and builds a draft release from exactly that
+# commit; the tag must match Version in internal/config/config.go. It can also be re-run by hand
+# from the Actions tab, but only with a tag selected under "Use workflow from".
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 # 1. Broadly secure the workflow by defaulting all tokens to read-only
@@ -15,11 +20,31 @@ jobs:
       version: ${{ steps.version.outputs.version }}
 
     steps:
+      # A manual run can pick any branch; only a tag pins the release to one commit.
+      - name: Require A Version Tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Releases are built from a version tag. Push one (git tag vX.Y.Z && git push origin vX.Y.Z) or pick a tag under \"Use workflow from\"."
+            exit 1
+          fi
+
       - name: Checkout Code
         # Pinned to actions/checkout v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Checked before the slow steps, so a tag/version mismatch fails in seconds.
+      - name: Get Version & Match Tag
+        id: version
+        run: |
+          VERSION=$(grep -oP 'Version\s*=\s*"\K[^"]+' internal/config/config.go)
+          if [ "$GITHUB_REF_NAME" != "v${VERSION}" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Version $VERSION in internal/config/config.go (expected v${VERSION})."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION"
 
       - name: Set up Go
         # Pinned to actions/setup-go v7.0.0
@@ -42,13 +67,6 @@ jobs:
 
       - name: Run Tests
         run: make test
-
-      - name: Get Version
-        id: version
-        run: |
-          VERSION=$(grep -oP 'Version\s*=\s*"\K[^"]+' internal/config/config.go)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building $VERSION"
 
       - name: Compile Static Linux Binaries
         run: |
@@ -139,7 +157,7 @@ jobs:
           gh release create "v${VERSION}" \
             *.tar.gz \
             SHA256SUMS.txt \
-            --target "${{ github.sha }}" \
+            --verify-tag \
             --title "v${VERSION}" \
             --notes-file RELEASE_NOTES.md \
             --draft

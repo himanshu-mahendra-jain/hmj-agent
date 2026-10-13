@@ -330,7 +330,8 @@ func (r *Runner) runTool(ctx context.Context, tc chat.ToolCall) string {
 }
 
 // logTool records one tool execution in the diagnostic log. Arguments are truncated
-// and the error attribute is present only when the tool failed.
+// and the error attribute is present only when the tool failed. Both are redacted,
+// since errors often repeat the arguments (fetch_url's include the full URL).
 func logTool(name, args string, d time.Duration, output string, execErr error) {
 	attrs := []any{
 		"name", name,
@@ -339,7 +340,7 @@ func logTool(name, args string, d time.Duration, output string, execErr error) {
 		"output_bytes", len(output),
 	}
 	if execErr != nil {
-		attrs = append(attrs, "error", execErr.Error())
+		attrs = append(attrs, "error", redact.String(execErr.Error()))
 	}
 	logging.L().Info("tool", attrs...)
 }
