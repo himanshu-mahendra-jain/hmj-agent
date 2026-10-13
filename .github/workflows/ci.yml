@@ -1,7 +1,12 @@
 name: CI
 
-# Manual only: run it from the Actions tab ("Run workflow"); pushes and pull requests do not trigger it.
+# Runs when a pull request is opened, updated or reopened, and again once it is merged into main
+# (a merge lands as a push to main), testing the resulting commit. It can also be run by hand
+# from the Actions tab ("Run workflow").
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # Default every token to read-only; this workflow only reads the repository.
