@@ -383,9 +383,20 @@ func TestFormatVersion(t *testing.T) {
 	}
 }
 
-func TestVersionStringStartsWithVersion(t *testing.T) {
-	if got := VersionString(); !strings.HasPrefix(got, Version) {
-		t.Fatalf("VersionString() = %q, want prefix %q", got, Version)
+func TestReleaseVersion(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"v1.0.3", "1.0.3"},
+		{"v12.40.7", "12.40.7"},
+		{"v1.0.4-0.20261013154203-2fb9d1ac2b71", "dev"}, // pseudo-version: a commit after a tag
+		{"v1.0.3+dirty", "dev"},                         // the tagged commit with uncommitted changes
+		{"v1.1.0-rc.1", "dev"},                          // pre-releases are not release builds
+		{"(devel)", "dev"},                              // no version stamped, e.g. go run
+		{"", "dev"},
+	}
+	for _, tt := range tests {
+		if got := releaseVersion(tt.in); got != tt.want {
+			t.Errorf("releaseVersion(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
