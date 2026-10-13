@@ -1,8 +1,9 @@
 name: Build Release
 
 # Runs when a version tag (e.g. v1.0.2) is pushed and builds a draft release from exactly that
-# commit; the tag must match Version in internal/config/config.go. It can also be re-run by hand
-# from the Actions tab, but only with a tag selected under "Use workflow from".
+# commit. The tag is the only source of the version: go build stamps it into the binary, and
+# CHANGELOG.md must have a section for it. It can also be re-run by hand from the Actions tab,
+# but only with a tag selected under "Use workflow from".
 on:
   push:
     tags: ['v*']
@@ -34,13 +35,17 @@ jobs:
         with:
           persist-credentials: false
 
-      # Checked before the slow steps, so a tag/version mismatch fails in seconds.
-      - name: Get Version & Match Tag
+      # Checked before the slow steps, so a malformed tag or a missing changelog fails in seconds.
+      - name: Get Version From Tag
         id: version
         run: |
-          VERSION=$(grep -oP 'Version\s*=\s*"\K[^"]+' internal/config/config.go)
-          if [ "$GITHUB_REF_NAME" != "v${VERSION}" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match Version $VERSION in internal/config/config.go (expected v${VERSION})."
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME is not a release version; use vX.Y.Z, e.g. v1.0.4."
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! grep -qE "^## \[${VERSION//./\\.}\]( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${VERSION}]' section. Add the release notes, merge them, then tag that commit."
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -73,6 +78,28 @@ jobs:
           mkdir -p dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/hmj-linux-amd64 .
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/hmj-linux-arm64 .
+
+      # go build stamps the version only for a clean checkout of the tagged commit; anything else
+      # reports "dev", so prove both binaries carry the tag and the amd64 one prints it.
+      - name: Verify Binary Version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for arch in amd64 arm64; do
+            stamped=$(go version -m "dist/hmj-linux-${arch}" | awk '$1 == "mod" { print $3 }')
+            if [ "$stamped" != "v${VERSION}" ]; then
+              echo "::error::dist/hmj-linux-${arch} is stamped '${stamped}', expected v${VERSION}."
+              exit 1
+            fi
+          done
+          reported=$(dist/hmj-linux-amd64 --version)
+          echo "$reported"
+          case "$reported" in
+            "HMJ Agent ${VERSION} ("*) ;;
+            *)
+              echo "::error::hmj --version printed '${reported}', expected 'HMJ Agent ${VERSION} (...)'."
+              exit 1
+              ;;
+          esac
 
       - name: Package Release Tarballs
         run: |

@@ -29,17 +29,30 @@ var (
 	ErrNoModels           = errors.New("no models configured")
 )
 
-// Version is the application version reported by --version.
-const Version = "1.0.3"
+// devVersion is reported by every build that is not an exact release: built between tags,
+// with uncommitted changes, or without build info (go run, go test).
+const devVersion = "dev"
 
-// VersionString returns Version with the VCS revision recorded in the build info, if any,
-// e.g. "1.0.0 (1eea0d8)" or "1.0.0 (1eea0d8, dirty)".
+// VersionString returns the version reported by --version with the VCS revision recorded in
+// the build info, if any, e.g. "1.0.3 (1eea0d8)" or "dev (1eea0d8, dirty)". The version comes
+// from the git tag go build stamps into the binary; the source holds no version number.
 func VersionString() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return Version
+		return devVersion
 	}
-	return formatVersion(Version, info.Settings)
+	return formatVersion(releaseVersion(info.Main.Version), info.Settings)
+}
+
+// releaseVersion turns the main module version from the build info into the reported version.
+// Only an exact release tag counts: "v1.0.3" becomes "1.0.3", while "(devel)", a pseudo-version
+// such as "v1.0.4-0.20261013154203-2fb9d1ac2b71" and a "+dirty" build all become devVersion.
+// go build only stamps valid semantic versions, so no further parsing is needed.
+func releaseVersion(v string) string {
+	if after, ok := strings.CutPrefix(v, "v"); ok && !strings.ContainsAny(after, "-+") {
+		return after
+	}
+	return devVersion
 }
 
 // formatVersion appends the short VCS revision and a dirty marker from the build settings to base.

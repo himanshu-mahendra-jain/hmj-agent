@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changes
+
+* `--version` takes the version from the release tag the binary was built from. Builds that are not an exact release (between tags, with local changes, or `go run`) report `dev` with their commit, e.g. `dev (2fb9d1a)`.
+
 ## [1.0.3] - 2026-10-13
 
 ### Changes

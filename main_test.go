@@ -28,8 +28,8 @@ func TestRunFlags(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("expected exit code 0 for %s, got %d", flag, code)
 		}
-		if !strings.Contains(stdout.String(), config.Version) {
-			t.Fatalf("expected %s in stdout for %s, got %q", config.Version, flag, stdout.String())
+		if want := "HMJ Agent " + config.VersionString(); !strings.Contains(stdout.String(), want) {
+			t.Fatalf("expected %q in stdout for %s, got %q", want, flag, stdout.String())
 		}
 	}
 
