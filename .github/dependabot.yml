@@ -7,6 +7,10 @@ updates:
       day: monday
       time: "10:00"
       timezone: Asia/Kolkata
+    groups:
+      go-modules:
+        patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: /
@@ -15,3 +19,7 @@ updates:
       day: monday
       time: "10:00"
       timezone: Asia/Kolkata
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: [minor, patch]

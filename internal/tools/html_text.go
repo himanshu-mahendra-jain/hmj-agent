@@ -116,8 +116,12 @@ func (c *htmlConverter) tag(name, attrs string, closing bool) {
 	}
 }
 
+// droppedLinkSchemes are link targets that are no use as text: script URLs only work in a
+// browser, and data: URLs embed whole files that would bloat the output.
+var droppedLinkSchemes = []string{"javascript:", "vbscript:", "data:"}
+
 // endLink replaces the text of the open link, if any, with [text](href). Links with no
-// text or a javascript: target are dropped.
+// text or a target in droppedLinkSchemes are dropped.
 func (c *htmlConverter) endLink() {
 	if c.linkAt < 0 {
 		return
@@ -125,9 +129,18 @@ func (c *htmlConverter) endLink() {
 	text := strings.Join(strings.Fields(string(c.out[c.linkAt:])), " ")
 	c.out = c.out[:c.linkAt]
 	c.linkAt = -1
-	if text != "" && !strings.HasPrefix(strings.ToLower(c.linkHref), "javascript:") {
+	if text != "" && !hasDroppedLinkScheme(c.linkHref) {
 		c.out = fmt.Appendf(c.out, "[%s](%s)", text, c.linkHref)
 	}
+}
+
+func hasDroppedLinkScheme(href string) bool {
+	for _, scheme := range droppedLinkSchemes {
+		if len(href) >= len(scheme) && strings.EqualFold(href[:len(scheme)], scheme) {
+			return true
+		}
+	}
+	return false
 }
 
 func isASCIILetter(b byte) bool {

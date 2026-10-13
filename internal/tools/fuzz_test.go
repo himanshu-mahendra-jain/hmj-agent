@@ -12,6 +12,7 @@ func FuzzHTMLToText(f *testing.F) {
 	f.Add("<script>alert(1)</script><p>visible</p>")
 	f.Add("<style>p{color:red}</style><noscript>no js</noscript>text")
 	f.Add("<a href=\"http://x\">link</a> <a href=\"javascript:void(0)\">bad</a>")
+	f.Add("<a href=\"data:text/plain,hi\">d</a><a href=\"VBSCRIPT:x\">v</a>")
 	f.Add("<pre><code>a < b && c > d</code></pre>")
 	f.Add("<ul><li>one<li>two</ul><hr><br>")
 	f.Add("&lt;script&gt; &amp; &#x41; &#0; &unknown;")

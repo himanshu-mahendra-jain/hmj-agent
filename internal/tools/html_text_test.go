@@ -16,6 +16,8 @@ func TestHTMLToText(t *testing.T) {
 		{"link", `see <a class="x" href="https://e.com/?a=1&amp;b=2">the <b>docs</b></a>.`, "see [the docs](https://e.com/?a=1&b=2)."},
 		{"single-quoted and bare hrefs", `<a href='/x'>x</a> <A HREF=/y>y</A>`, "[x](/x) [y](/y)"},
 		{"javascript link dropped", `<a href="javascript:void(0)">menu</a>ok`, "ok"},
+		{"data and vbscript links dropped", `<a href="data:text/csv;base64,YSxi">csv</a><a href=" VBScript:x">run</a><a href="JavaScript:x">go</a>ok`, "ok"},
+		{"scheme only at the start counts", `<a href="/p?u=data:x">p</a>`, "[p](/p?u=data:x)"},
 		{"anchor without href keeps text", `<a name="top">Top</a>`, "Top"},
 		{"hidden elements", "<script>var a = '</p>';</script><style>p{}</style><noscript>nojs</noscript><svg><path d='M0'/></svg>shown", "shown"},
 		{"script end tag case and spacing", "<SCRIPT>x</Script >after", "after"},
