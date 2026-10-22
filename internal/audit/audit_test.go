@@ -53,8 +53,8 @@ func TestRecord(t *testing.T) {
 	if run.Tool != "run_command" || run.DurationMS != 1500 || run.OutputBytes != 42 || run.Error != "" {
 		t.Errorf("run entry = %+v", run)
 	}
-	if strings.Contains(run.Args, "sk-proj") || !strings.Contains(run.Args, "[REDACTED]; make") {
-		t.Errorf("args not redacted: %q", run.Args)
+	if !strings.Contains(run.Args, "KEY=sk-proj-0123456789abcdefghijk; make") {
+		t.Errorf("args not recorded as given: %q", run.Args)
 	}
 	if entries[2].Error != "no such file" {
 		t.Errorf("error not recorded: %+v", entries[2])

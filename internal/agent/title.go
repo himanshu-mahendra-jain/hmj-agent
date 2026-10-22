@@ -20,13 +20,12 @@ const titleInstruction = "Write a 3–6 word title for this conversation. Reply 
 
 // Limits that keep the title request small and the title short.
 const (
-	titlePromptRunes     = 1000 // the first user prompt sent to the model
-	titleReplyRunes      = 300  // the assistant's first reply sent to the model
-	titleMaxRunes        = 60   // the longest title kept
-	titleMaxOutputTokens = 40   // the output cap for the title request when reasoning is off
-	// titleReasoningMaxOutputTokens is the output cap when the model reasons at low effort. The
-	// reasoning counts against the cap, so 40 tokens would leave no room for the title.
-	titleReasoningMaxOutputTokens = 256
+	titlePromptRunes = 1000 // the first user prompt sent to the model
+	titleReplyRunes  = 300  // the assistant's first reply sent to the model
+	titleMaxRunes    = 60   // the longest title kept
+	// titleMaxOutputTokens is the output cap for the title request. Reasoning counts against it,
+	// so it leaves room for a little; a model that does not reason stops after a few words.
+	titleMaxOutputTokens = 256
 )
 
 // titleTimeout bounds the title request. The prompt returns only after it, and no spinner covers
@@ -39,10 +38,10 @@ var errTitleToolCall = errors.New("the model called a tool instead of writing a 
 
 // maybeGenerateTitle replaces the automatic name of a conversation with one the model writes from
 // its first exchange. It runs once, after the first turn has finished normally, and only while the
-// name is still automatic. It is silent: a failure, a cancelled turn or an empty title leaves the
+// name is still automatic; the first turn after a compaction is not a first exchange. It is silent: a failure, a cancelled turn or an empty title leaves the
 // heuristic name in place.
 func (r *Runner) maybeGenerateTitle(ctx context.Context, conv *session.Conversation, prompt, reply string) {
-	if !conv.AutoTitled || conv.UserMessageCount() != 1 || ctx.Err() != nil {
+	if !conv.AutoTitled || conv.UserMessageCount() != 1 || conv.IsCompacted() || ctx.Err() != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, titleTimeout)
@@ -91,20 +90,18 @@ func (r *Runner) generateTitle(ctx context.Context, ref config.ModelRef, prompt,
 	return cleanTitle(msg.Content), nil
 }
 
-// titleSettings edits the model's settings for the title request on protocol api. Reasoning
-// models of the Anthropic, Responses and Gemini protocols reason even when no reasoning parameters
-// are sent (thinking cannot be turned off on the Claude 5 models), and that reasoning would use up
-// a small cap, so they are asked for low effort and given room for it. A model configured with
-// thinking off does not reason, and Chat Completions sends no reasoning parameters, so both keep
-// the small cap.
+// titleSettings edits the model's settings for the title request on protocol api. Every model
+// gets the same cap, since many reason even when no reasoning parameters are sent, thinking "off"
+// included (Claude models think when the thinking field is left out), and the reasoning counts
+// against the cap.
+// Effort is lowered wherever it is sent: with reasoning on, on every protocol but Chat Completions,
+// which sends no reasoning parameters, and on Anthropic with thinking off when the model sets an
+// effort, which is then sent anyway.
 func titleSettings(api string, m *config.Model) {
 	m.MaxOutputTokens = titleMaxOutputTokens
-	if !m.ThinkingEnabled() {
-		return
-	}
-	if api != config.APICompletions {
+	reasoning := m.ThinkingEnabled() && api != config.APICompletions
+	if reasoning || (api == config.APIAnthropic && m.Effort != "") {
 		m.Effort = "low"
-		m.MaxOutputTokens = titleReasoningMaxOutputTokens
 	}
 }
 

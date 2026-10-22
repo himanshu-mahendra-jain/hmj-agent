@@ -6,11 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"hmj-agent/internal/chat"
 	"hmj-agent/internal/diff"
-	"hmj-agent/internal/session"
 	"hmj-agent/internal/terminal"
 	"hmj-agent/internal/tools"
 )
@@ -130,69 +128,6 @@ func FuzzParseRateLimitHint(f *testing.F) {
 	})
 }
 
-// FuzzCompactToolOutput checks pruning of old tool output: it never grows a message, never
-// touches other messages, keeps the head and tail of what it shortens, and is idempotent.
-func FuzzCompactToolOutput(f *testing.F) {
-	var long strings.Builder
-	for i := range 60 {
-		long.WriteString("output line " + strings.Repeat("x", i) + "\n")
-	}
-	f.Add(long.String())
-	f.Add(strings.Repeat("a", 5000))
-	f.Add(strings.Repeat("日本語", 800))
-	f.Add("short\n")
-	f.Add("")
-	f.Add(strings.Repeat("\n", 100))
-	f.Add(strings.Repeat("l\n", 30) + "pruned for context efficiency")
-	f.Add(strings.Repeat("\xff\xfe", 700))
-
-	f.Fuzz(func(t *testing.T, output string) {
-		conv := &session.Conversation{Messages: []chat.Message{
-			{Role: "user", Content: "first"},
-			{Role: "tool", ToolCallID: "c1", Content: output},
-			{Role: "assistant", Content: "done"},
-			{Role: "user", Content: "second"},
-		}}
-		pruned, saved := conv.PruneOldToolOutputs(1)
-		got := conv.Messages[1].Content
-		if len(got) > len(output) {
-			t.Fatalf("pruned output is longer: %d > %d", len(got), len(output))
-		}
-		if saved != len(output)-len(got) || (pruned == 1) != (got != output) {
-			t.Fatalf("reported pruned=%d saved=%d, but len %d -> %d", pruned, saved, len(output), len(got))
-		}
-		if conv.Messages[0].Content != "first" || conv.Messages[2].Content != "done" || conv.Messages[3].Content != "second" {
-			t.Fatal("non-tool messages were modified")
-		}
-		if got != output {
-			checkPrunedKeepsEnds(t, output, got)
-			if p, _ := conv.PruneOldToolOutputs(1); p != 0 || conv.Messages[1].Content != got {
-				t.Fatal("pruning twice changed the output again")
-			}
-		}
-		if utf8.ValidString(output) && !utf8.ValidString(got) {
-			t.Fatalf("pruning cut a multi-byte character: %q", got)
-		}
-	})
-}
-
-func checkPrunedKeepsEnds(t *testing.T, output, got string) {
-	t.Helper()
-	lines := strings.Split(output, "\n")
-	if len(lines) > session.RetainHeadLines+session.RetainTailLines {
-		head := strings.Join(lines[:session.RetainHeadLines], "\n") + "\n"
-		tail := strings.Join(lines[len(lines)-session.RetainTailLines:], "\n")
-		if !strings.HasPrefix(got, head) || !strings.HasSuffix(got, tail) || !strings.Contains(got, "lines pruned") {
-			t.Fatalf("head/tail lost: in=%q out=%q", output, got)
-		}
-		return
-	}
-	// Few very long lines: the first and last bytes survive (a split character may cost 3).
-	if !strings.HasPrefix(got, output[:396]) || !strings.HasSuffix(got, output[len(output)-196:]) || !strings.Contains(got, "bytes pruned") {
-		t.Fatalf("byte head/tail lost: in len %d, out %q", len(output), got)
-	}
-}
-
 // FuzzUnquoteDragPath checks drag-and-drop path cleanup never grows the text, leaves plain
 // paths alone and strips exactly one pair of matching quotes.
 func FuzzUnquoteDragPath(f *testing.F) {
@@ -223,17 +158,4 @@ func FuzzUnquoteDragPath(f *testing.F) {
 			t.Fatalf("single quotes not stripped: %q -> %q", in, out)
 		}
 	})
-}
-
-// A stray invalid byte in the head of a long single-line output (binary data, Latin-1
-// text) must not discard the head: only a rune split by the cut is dropped.
-func TestPruneKeepsHeadOfInvalidUTF8(t *testing.T) {
-	output := "HEADMARK" + strings.Repeat("\xff", 3000)
-	conv := &session.Conversation{Messages: []chat.Message{
-		{Role: "user", Content: "a"}, {Role: "tool", Content: output}, {Role: "user", Content: "b"},
-	}}
-	conv.PruneOldToolOutputs(1)
-	if !strings.Contains(conv.Messages[1].Content, "HEADMARK") {
-		t.Errorf("head lost: %q", conv.Messages[1].Content[:40])
-	}
 }

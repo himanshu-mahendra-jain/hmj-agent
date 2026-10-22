@@ -78,7 +78,7 @@ type completionsFuncDelta struct {
 
 func convertMessagesToCompletions(messages []Message) []completionsMessage {
 	var msgs []completionsMessage
-	for _, msg := range messages {
+	for _, msg := range portableCompactions(messages, "") {
 		switch msg.Role {
 		case "tool":
 			msgs = append(msgs, completionsMessage{

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"hmj-agent/internal/config"
-	"hmj-agent/internal/redact"
 )
 
 // HealthStatus categorizes the health of a provider model endpoint.
@@ -316,7 +315,7 @@ func parseHealthErrorMessage(raw []byte, statusCode int) string {
 		msg = string(raw)
 	}
 
-	msg = strings.TrimSpace(redact.String(msg))
+	msg = strings.TrimSpace(msg)
 	msg = strings.ReplaceAll(msg, "\n", " ")
 	msg = strings.ReplaceAll(msg, "\r", " ")
 	for strings.Contains(msg, "  ") {

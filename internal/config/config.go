@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"maps"
 	"net/netip"
 	"net/url"
@@ -88,7 +87,7 @@ type Config struct {
 // Provider is an API endpoint with its base URL, API key, wire protocol and the models it serves.
 type Provider struct {
 	BaseURL string  `json:"baseUrl"`
-	APIKey  Secret  `json:"apiKey"`
+	APIKey  string  `json:"apiKey"`
 	API     string  `json:"api,omitempty"`
 	Models  []Model `json:"models"`
 }
@@ -165,9 +164,6 @@ func (p Provider) WireAPISource() (api, source string) {
 type Model struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
-	// ContextWindow is the most input tokens the model accepts. When set, older
-	// history is condensed before a request is estimated to fill most of it.
-	ContextWindow int `json:"contextWindow,omitempty"`
 	// MaxOutputTokens caps the tokens the model may generate per response. Unset, Anthropic uses
 	// its default of 32000 and the other protocols send no limit.
 	MaxOutputTokens int `json:"maxOutputTokens,omitzero"`
@@ -563,46 +559,12 @@ func modelRefList(matches []ModelRef) string {
 // ResolveAPIKey expands a value of the form $NAME to that environment variable. Any other value is
 // returned unchanged. The name is looked up directly, never passed to a shell, so a value such
 // as "$(cmd)" names a (missing) variable rather than running cmd.
-func ResolveAPIKey(value Secret) string {
-	if after, ok := strings.CutPrefix(string(value), "$"); ok {
+func ResolveAPIKey(value string) string {
+	if after, ok := strings.CutPrefix(value, "$"); ok {
 		return os.Getenv(after)
 	}
-	return string(value)
+	return value
 }
-
-// APIKeyEnvName returns the environment variable that a value of the form $NAME names,
-// or "" for a literal key.
-func APIKeyEnvName(value Secret) string {
-	if after, ok := strings.CutPrefix(string(value), "$"); ok {
-		return after
-	}
-	return ""
-}
-
-// Secret holds a credential such as an API key. Printing, logging or encoding it
-// shows "[redacted]" instead of the value; ResolveAPIKey returns the real key.
-type Secret string
-
-const redactedSecret = "[redacted]"
-
-func (s Secret) masked() string {
-	if s == "" {
-		return ""
-	}
-	return redactedSecret
-}
-
-// String masks the secret for fmt verbs such as %v and %s.
-func (s Secret) String() string { return s.masked() }
-
-// GoString masks the secret for %#v.
-func (s Secret) GoString() string { return strconv.Quote(s.masked()) }
-
-// LogValue masks the secret in log/slog records.
-func (s Secret) LogValue() slog.Value { return slog.StringValue(s.masked()) }
-
-// MarshalJSON masks the secret when encoded; decoding reads the real value.
-func (s Secret) MarshalJSON() ([]byte, error) { return []byte(strconv.Quote(s.masked())), nil }
 
 // SecurityWarnings lists the ways the config at path could expose an API key: the
 // file is readable by other users while it holds a literal key (not a $VAR

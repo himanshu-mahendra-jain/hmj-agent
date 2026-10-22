@@ -14,7 +14,7 @@ import (
 // otherwise adds to every request.
 func TestModelRequestsAskForNoCompression(t *testing.T) {
 	for _, tc := range []struct{ api, sse string }{
-		{config.APIAnthropic, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"},
+		{config.APIAnthropic, anthropicEndTurn},
 		{config.APIResponses, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"},
 	} {
 		t.Run(tc.api, func(t *testing.T) {

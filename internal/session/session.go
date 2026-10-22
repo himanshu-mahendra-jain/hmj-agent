@@ -16,7 +16,6 @@ import (
 
 	"hmj-agent/internal/chat"
 	"hmj-agent/internal/config"
-	"hmj-agent/internal/redact"
 	"hmj-agent/internal/terminal/theme"
 )
 
@@ -128,18 +127,11 @@ type Conversation struct {
 	CreatedAt time.Time `json:"createdAt"`
 	// UpdatedAt records when the conversation was last changed.
 	UpdatedAt time.Time `json:"updatedAt"`
-	// Pruned marks whether this conversation's older tool outputs have
-	// already been compacted, so prune passes can skip them cheaply.
-	Pruned bool `json:"pruned,omitempty"`
 	// LastPromptTokens is the prompt size the provider reported for the latest request. It is the
 	// baseline for EstimateTokens, which adds only the bytes appended since TokenMarkIndex.
 	LastPromptTokens int `json:"lastPromptTokens,omitzero"`
 	// TokenMarkIndex is the index of the first message not included in LastPromptTokens.
 	TokenMarkIndex int `json:"tokenMarkIndex,omitzero"`
-	// ThinkingKeptValid marks a conversation whose pruning and condensing have always stripped
-	// the thinking blocks after the messages they edit. A conversation saved without it by an
-	// earlier version may carry stale blocks after such edits; they are stripped once on load.
-	ThinkingKeptValid bool `json:"thinkingKeptValid,omitempty"`
 }
 
 // UserMessageCount returns the number of user messages in the transcript.
@@ -311,50 +303,10 @@ func (sm *SessionManager) finishLoadedConversations(defaultModel config.ModelRef
 		if conv.Model.Model == "" {
 			conv.Model = defaultModel
 		}
-		if repaired := repairToolCalls(conv.Messages); len(repaired) != len(conv.Messages) {
-			conv.Messages = repaired
-			conv.resetTokenMark()
-		}
 		if conv.UserMessageCount() == 0 {
 			conv.SyncSystemPrompt(CurrentSystemPrompt())
 		}
-		if !conv.ThinkingKeptValid {
-			if conv.Pruned {
-				conv.stripThinkingFrom(0)
-			}
-			conv.ThinkingKeptValid = true
-		}
 	}
-}
-
-// repairToolCalls returns msgs with a placeholder tool result appended for every tool call that
-// has none. Transcripts saved before cancelled turns were repaired can contain such calls, which
-// providers reject. msgs is returned unchanged when nothing is missing.
-func repairToolCalls(msgs []chat.Message) []chat.Message {
-	var out []chat.Message
-	for i := 0; i < len(msgs); i++ {
-		out = append(out, msgs[i])
-		if msgs[i].Role != "assistant" || len(msgs[i].ToolCalls) == 0 {
-			continue
-		}
-		answered := make(map[string]bool)
-		j := i + 1
-		for ; j < len(msgs) && msgs[j].Role == "tool"; j++ {
-			answered[msgs[j].ToolCallID] = true
-			out = append(out, msgs[j])
-		}
-		for _, tc := range msgs[i].ToolCalls {
-			if !answered[tc.ID] {
-				out = append(out, chat.Message{Role: "tool", ToolCallID: tc.ID, Content: CancelledToolResult})
-				answered[tc.ID] = true
-			}
-		}
-		i = j - 1
-	}
-	if len(out) == len(msgs) {
-		return msgs
-	}
-	return out
 }
 
 // LoadSessionManager loads the session file at storagePath, falling back to a fresh default
@@ -415,8 +367,8 @@ func (sm *SessionManager) StoragePath() string {
 	return sm.storagePath
 }
 
-// Save compacts the active conversation and writes all conversations to the storage
-// path. It does nothing when no storage path is set.
+// Save writes all conversations to the storage path. It does nothing when no storage path is
+// set.
 func (sm *SessionManager) Save() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -428,12 +380,6 @@ func (sm *SessionManager) Save() error {
 	dir := filepath.Dir(sm.storagePath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
-	}
-
-	// Only the active conversation can have changed since the last save; the others
-	// were compacted when they were last active.
-	if conv, ok := sm.Conversations[sm.ActiveID]; ok {
-		conv.Compact()
 	}
 
 	data := struct {
@@ -457,9 +403,6 @@ func (sm *SessionManager) Save() error {
 	if err != nil {
 		return err
 	}
-	// Credentials the agent read or printed (API keys, tokens, private keys) are
-	// masked on disk; the in-memory conversation is unchanged.
-	raw = redact.Bytes(raw)
 
 	tmpFile := sm.storagePath + ".tmp"
 	f, err := os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
@@ -539,8 +482,6 @@ func (sm *SessionManager) newLocked(name string) *Conversation {
 		Model:     model,
 		CreatedAt: now,
 		UpdatedAt: now,
-		// A new conversation has no edits yet, so it needs no repair on load.
-		ThinkingKeptValid: true,
 		Messages: []chat.Message{
 			{
 				Role:    "system",

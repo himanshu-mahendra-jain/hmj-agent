@@ -357,34 +357,19 @@ func TestEditFile10MBCap(t *testing.T) {
 	}
 }
 
-func TestRunCommandStripsSensitiveEnv(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-
+// Commands inherit hmj's whole environment, credentials included: hmj runs on a dedicated VM.
+func TestRunCommandInheritsEnvironment(t *testing.T) {
+	t.Chdir(t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "sk-secret-12345")
 	t.Setenv("GH_TOKEN", "ghp_secret_token_123")
-	t.Setenv("AUTH_SECRET", "jwt-secret-val")
-	t.Setenv("DB_PASSWORD", "super-secret-pw")
 	t.Setenv("NORMAL_USER_VAR", "preserved-val")
-	t.Setenv("TOKENIZERS_PARALLELISM", "true")
 
-	tool := &tools.RunCommandTool{}
-	res, err := tool.Execute(context.Background(), `{"command":"echo OAI=$OPENAI_API_KEY GH=$GH_TOKEN SEC=$AUTH_SECRET PW=$DB_PASSWORD USR=$NORMAL_USER_VAR TP=$TOKENIZERS_PARALLELISM"}`)
+	res, err := (&tools.RunCommandTool{}).Execute(context.Background(), `{"command":"echo OAI=$OPENAI_API_KEY GH=$GH_TOKEN USR=$NORMAL_USER_VAR"}`)
 	if err != nil {
 		t.Fatalf("run_command failed: %v", err)
 	}
-
-	if strings.Contains(res, "sk-secret-12345") ||
-		strings.Contains(res, "ghp_secret_token_123") ||
-		strings.Contains(res, "jwt-secret-val") ||
-		strings.Contains(res, "super-secret-pw") {
-		t.Errorf("expected sensitive credentials to be stripped from command environment, got: %s", res)
-	}
-	if !strings.Contains(res, "USR=preserved-val") {
-		t.Errorf("expected normal environment variables to be preserved, got: %s", res)
-	}
-	if !strings.Contains(res, "TP=true") {
-		t.Errorf("expected allowlisted TOKENIZERS_PARALLELISM to be preserved, got: %s", res)
+	if want := "OAI=sk-secret-12345 GH=ghp_secret_token_123 USR=preserved-val"; !strings.Contains(res, want) {
+		t.Errorf("output = %q, want %q", res, want)
 	}
 }
 

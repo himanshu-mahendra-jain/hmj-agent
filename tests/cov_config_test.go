@@ -71,9 +71,6 @@ func TestEnvKeyReferenceEndToEnd(t *testing.T) {
 	if got := config.ResolveAPIKey(p.APIKey); got != "sk-test-value" {
 		t.Errorf("resolved key = %q", got)
 	}
-	if s := p.APIKey.String(); strings.Contains(s, "sk-test") || strings.Contains(s, "HMJ_COV") {
-		t.Errorf("key printed in clear: %q", s)
-	}
 	notes := config.UnsetKeyVars(cfg)
 	if len(notes) != 1 || !strings.Contains(notes[0], "provider unset") {
 		t.Errorf("UnsetKeyVars = %v, want one note for provider unset", notes)

@@ -223,6 +223,16 @@ func (c *Client) WithModelOverride(ref config.ModelRef, change func(*config.Mode
 	return c.clone(cfg)
 }
 
+// Quiet returns a copy of c that reports retries and detected protocols only in the diagnostic
+// log, for requests that run while the terminal belongs to something else. The copy shares the
+// protocol memory with c.
+func (c *Client) Quiet() *Client {
+	cc := c.clone(c.Config)
+	cc.OnRetry = nil
+	cc.OnProtocolDetected = nil
+	return cc
+}
+
 // clone returns a shallow copy of c that uses cfg, with its protocol memory created first so the
 // copy and c share one memory.
 func (c *Client) clone(cfg config.Config) *Client {
@@ -248,13 +258,13 @@ func (c *Client) StreamChat(
 		return Message{}, nil, err
 	}
 
-	retryCfg := c.RetryConfig
-	if retryCfg.MaxRetries < 0 {
-		retryCfg = DefaultRetryConfig()
-	}
-
-	for attempt := 0; ; attempt++ {
-		msg, usage, retryAfter, retryable, err := c.streamChatOnce(
+	var msg Message
+	var usage *TokenUsage
+	err = c.withRetries(ctx, func() (time.Duration, bool, error) {
+		var retryAfter time.Duration
+		var retryable bool
+		var err error
+		msg, usage, retryAfter, retryable, err = c.streamChatOnce(
 			ctx,
 			ref.Provider,
 			provider,
@@ -264,53 +274,52 @@ func (c *Client) StreamChat(
 			onReasoning,
 			onDelta,
 		)
-		if err == nil {
-			return msg, usage, nil
-		}
+		return retryAfter, retryable, err
+	})
+	if err != nil {
+		return Message{}, nil, err
+	}
+	return msg, usage, nil
+}
 
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return Message{}, nil, err
+// waitToRetry waits before retry number attempt+1 of a request that failed with err, and returns
+// ctx's error when ctx ends first.
+func (c *Client) waitToRetry(ctx context.Context, retryCfg RetryConfig, attempt int, retryAfter time.Duration, err error) error {
+	delay := min(time.Duration(float64(retryCfg.InitialBackoff)*math.Pow(retryCfg.BackoffFactor, float64(attempt))), retryCfg.MaxBackoff)
+	// If the provider explicitly told us when the limit resets (a
+	// Retry-After header or a "try again in 4m39s" body hint), honor that
+	// exact window (plus a small buffer) instead of the naive backoff
+	// schedule. Such hints can legitimately exceed MaxBackoff, e.g. an
+	// hourly quota that resets in several minutes.
+	if retryAfter > 0 {
+		buf := retryCfg.RetryBuffer
+		if buf == 0 {
+			buf = retryAfterBuffer
 		}
+		delay = retryAfter + buf
+	}
+	// Jitter +/- 20% (skipped for server-provided exact waits, where we
+	// want to land just after the reset, not before it).
+	if retryAfter == 0 && delay > 0 {
+		jitter := time.Duration((rand.Float64()*0.4 - 0.2) * float64(delay))
+		delay += jitter
+	}
+	if delay < 1*time.Millisecond {
+		delay = 1 * time.Millisecond
+	}
 
-		if !retryable || attempt >= retryCfg.MaxRetries {
-			return Message{}, nil, err
-		}
+	logging.L().Warn("llm retry", "attempt", attempt+1, "max", retryCfg.MaxRetries, "delay", delay, "error", err.Error())
+	if c.OnRetry != nil {
+		c.OnRetry(attempt+1, retryCfg.MaxRetries, delay, err)
+	}
 
-		delay := min(time.Duration(float64(retryCfg.InitialBackoff)*math.Pow(retryCfg.BackoffFactor, float64(attempt))), retryCfg.MaxBackoff)
-		// If the provider explicitly told us when the limit resets (a
-		// Retry-After header or a "try again in 4m39s" body hint), honor that
-		// exact window (plus a small buffer) instead of the naive backoff
-		// schedule. Such hints can legitimately exceed MaxBackoff, e.g. an
-		// hourly quota that resets in several minutes.
-		if retryAfter > 0 {
-			buf := retryCfg.RetryBuffer
-			if buf == 0 {
-				buf = retryAfterBuffer
-			}
-			delay = retryAfter + buf
-		}
-		// Jitter +/- 20% (skipped for server-provided exact waits, where we
-		// want to land just after the reset, not before it).
-		if retryAfter == 0 && delay > 0 {
-			jitter := time.Duration((rand.Float64()*0.4 - 0.2) * float64(delay))
-			delay += jitter
-		}
-		if delay < 1*time.Millisecond {
-			delay = 1 * time.Millisecond
-		}
-
-		logging.L().Warn("llm retry", "attempt", attempt+1, "max", retryCfg.MaxRetries, "delay", delay, "error", err.Error())
-		if c.OnRetry != nil {
-			c.OnRetry(attempt+1, retryCfg.MaxRetries, delay, err)
-		}
-
-		// The select below already wakes immediately if the user halts with
-		// Esc (ctx cancellation), even for long quota-reset waits.
-		select {
-		case <-ctx.Done():
-			return Message{}, nil, ctx.Err()
-		case <-time.After(delay):
-		}
+	// The select below already wakes immediately if the user halts with
+	// Esc (ctx cancellation), even for long quota-reset waits.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+		return nil
 	}
 }
 
@@ -414,7 +423,9 @@ func (r *idleReader) Read(p []byte) (int, error) {
 
 // logResponse records in the diagnostic log how a provider answered a model request: how long
 // its response headers took, the HTTP version, any content encoding and the provider's request
-// ID, which its support needs to look into a request.
+// ID, which its support needs to look into a request. For Anthropic it also records the
+// organization and workspace the API key ran in, whose rate and spend limits the request counted
+// toward.
 func logResponse(req *http.Request, resp *http.Response, headersAfter time.Duration) {
 	requestID := resp.Header.Get("request-id")
 	if requestID == "" {
@@ -426,6 +437,8 @@ func logResponse(req *http.Request, resp *http.Response, headersAfter time.Durat
 		"proto", resp.Proto,
 		"content_encoding", resp.Header.Get("Content-Encoding"),
 		"request_id", requestID,
+		"organization_id", resp.Header.Get("anthropic-organization-id"),
+		"workspace_id", resp.Header.Get("anthropic-workspace-id"),
 		"headers_after", headersAfter,
 	)
 }
@@ -459,12 +472,24 @@ func (c *Client) doStream(ctx context.Context, req *http.Request, onEvent func(e
 		return httpErrorFromResponse(resp)
 	}
 
-	err = ReadSSE(resp.Body, onEvent)
+	// eventErr marks an error the provider reported inside the stream, as opposed to a failed read.
+	eventErr := false
+	err = ReadSSE(resp.Body, func(eventType, data string) error {
+		if err := onEvent(eventType, data); err != nil {
+			eventErr = true
+			return err
+		}
+		return nil
+	})
 	if err == nil {
 		return 0, false, nil
 	}
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return 0, false, err
+	}
+	// Name the request, which the provider's support needs to look into it.
+	if id := resp.Header.Get("request-id"); eventErr && id != "" {
+		err = fmt.Errorf("%w (request_id %s)", err, id)
 	}
 	if watchdog.Stalled() {
 		return 0, !started(), fmt.Errorf("%w: no data for %s: %w", ErrStreamStalled, StreamIdleTimeout, err)

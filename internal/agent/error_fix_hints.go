@@ -23,10 +23,16 @@ func RemediationHint(err error) string {
 	}
 	if statusErr, ok := errors.AsType[*chat.StatusError](err); ok {
 		switch statusErr.Code {
-		case http.StatusUnauthorized, http.StatusForbidden:
+		case http.StatusUnauthorized:
 			return "check the provider apiKey / its environment variable"
+		case http.StatusPaymentRequired:
+			return "check the billing and credit balance of the provider account"
+		case http.StatusForbidden:
+			return "check the provider apiKey, and that its account and workspace may use this model"
 		case http.StatusNotFound:
 			return "check the model id and baseUrl"
+		case http.StatusRequestEntityTooLarge:
+			return "the request is too large for the provider; start a new conversation with /new"
 		}
 		return ""
 	}

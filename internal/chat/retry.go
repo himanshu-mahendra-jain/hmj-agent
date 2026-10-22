@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"hmj-agent/internal/logging"
-	"hmj-agent/internal/redact"
 )
 
 type RetryConfig struct {
@@ -44,6 +44,7 @@ func IsRetryableStatusCode(code int) bool {
 	switch code {
 	case http.StatusTooManyRequests, // 429
 		http.StatusRequestTimeout,      // 408
+		http.StatusConflict,            // 409 (Anthropic: conflict_error; the official SDKs retry it)
 		http.StatusInternalServerError, // 500
 		http.StatusBadGateway,          // 502
 		http.StatusServiceUnavailable,  // 503
@@ -62,8 +63,15 @@ const MaxErrorResponseBytes = 1 << 20
 // "HTTP <code>: <body>" form; callers can match Code to suggest a fix.
 type StatusError struct {
 	Code int
-	Body string // truncated response body, or a note that it could not be read
-	err  error  // the body read failure, when there was one
+	// Body is the truncated response body, or a note that it could not be read. An Anthropic
+	// error body is shown as "<type>: <message>" instead of its raw JSON.
+	Body string
+	// Type is the Anthropic error type, such as "billing_error", when the body had that shape.
+	Type string
+	// RequestID identifies the request to the provider's support, from the body or the
+	// request-id header.
+	RequestID string
+	err       error // the body read failure, when there was one
 }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("HTTP %d: %s", e.Code, e.Body) }
@@ -83,9 +91,21 @@ func httpErrorFromResponse(resp *http.Response) (retryAfter time.Duration, retry
 		statusErr.Body = fmt.Sprintf("(failed to read error response: %v)", readErr)
 		statusErr.err = readErr
 	} else {
-		statusErr.Body = truncateErrorBody(data, maxShownErrorRunes)
-		// The display is cut short; the diagnostic log keeps the whole (redacted) body.
-		logging.L().Debug("http error body", "status", resp.StatusCode, "body", redact.String(string(data)))
+		shown := data
+		if apiErr, ok := parseAnthropicErrorBody(data); ok {
+			statusErr.Type = apiErr.Error.Type
+			statusErr.RequestID = apiErr.RequestID
+			shown = []byte(apiErr.Error.Type + ": " + apiErr.Error.Message)
+		}
+		statusErr.Body = truncateErrorBody(shown, maxShownErrorRunes)
+		// The display is cut short; the diagnostic log keeps the whole body.
+		logging.L().Debug("http error body", "status", resp.StatusCode, "body", string(data))
+	}
+	if statusErr.RequestID == "" {
+		statusErr.RequestID = resp.Header.Get("request-id")
+	}
+	if statusErr.RequestID != "" {
+		statusErr.Body += " (request_id " + statusErr.RequestID + ")"
 	}
 	if loc := resp.Header.Get("Location"); loc != "" && resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		statusErr.Body = truncateErrorBody([]byte("redirect to "+loc+" not followed, so the API key is not sent on; set the provider's baseUrl to the final address"), maxShownErrorRunes)
@@ -96,6 +116,27 @@ func httpErrorFromResponse(resp *http.Response) (retryAfter time.Duration, retry
 		retryAfter = ParseRateLimitHint(string(data))
 	}
 	return retryAfter, IsRetryableStatusCode(resp.StatusCode), err
+}
+
+// anthropicErrorBody is the error shape of the Anthropic API: {"type":"error","error":{"type",
+// "message"},"request_id"}.
+type anthropicErrorBody struct {
+	Type  string `json:"type"`
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+	RequestID string `json:"request_id"`
+}
+
+// parseAnthropicErrorBody decodes an Anthropic error body. The top-level "type": "error" tells it
+// apart from the OpenAI and Gemini error bodies, which also nest an "error" object.
+func parseAnthropicErrorBody(data []byte) (anthropicErrorBody, bool) {
+	var b anthropicErrorBody
+	if err := json.Unmarshal(data, &b); err != nil || b.Type != "error" || b.Error.Type == "" || b.Error.Message == "" {
+		return anthropicErrorBody{}, false
+	}
+	return b, true
 }
 
 // ParseRetryAfterHeader parses a numeric Retry-After header or HTTP date into a duration.
@@ -244,10 +285,8 @@ const maxShownErrorRunes = 1000
 
 // truncateErrorBody returns a rune-safe string representation of error response bodies,
 // bounded to maxRunes to protect prompt context and terminal output from huge HTML/error dumps.
-// Credentials are masked first (providers sometimes echo the request or key back), so the cut
-// cannot leave part of a key showing.
 func truncateErrorBody(data []byte, maxRunes int) string {
-	s := strings.TrimSpace(redact.String(string(data)))
+	s := strings.TrimSpace(string(data))
 	if maxRunes <= 0 {
 		return ""
 	}

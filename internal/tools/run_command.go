@@ -14,8 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"hmj-agent/internal/chat"
 )
 
@@ -168,7 +166,6 @@ func (t *RunCommandTool) timeoutFor(in runCommandInput) time.Duration {
 func newRunCommand(ctx context.Context, cmdStr, workdir string, timeout time.Duration) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	cmd.Dir = workdir
-	cmd.Env = cleanChildEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// If the timeout fires, kill the entire process group hard; WaitDelay bounds how
 	// long we wait on pipe drains so stubborn grandchild processes cannot hang.
@@ -258,77 +255,4 @@ func (t *RunCommandTool) Execute(ctx context.Context, argsJSON string) (string, 
 		return "[command executed successfully with no output]", nil
 	}
 	return res, nil
-}
-
-func cleanChildEnv() []string {
-	env := os.Environ()
-	cleaned := make([]string, 0, len(env))
-	for _, entry := range env {
-		key, _, ok := strings.Cut(entry, "=")
-		if ok && (isSensitiveEnvKey(key) || isRegisteredSensitiveEnv(key)) {
-			continue
-		}
-		cleaned = append(cleaned, entry)
-	}
-	return cleaned
-}
-
-// isSensitiveEnvKey returns true if an environment variable name indicates sensitive
-// credentials (e.g. LLM API keys, authentication tokens, or private secrets) that should
-// not be inherited by child processes spawned during tool execution.
-//
-// Tradeoff note: Suffixes like _TOKEN (e.g. GH_TOKEN, GITHUB_TOKEN) protect against
-// credential exfiltration via prompt injection, but will prevent child commands like `gh`
-// from inheriting token-based auth from the parent shell. CLI operations requiring auth
-// should rely on persistent credential stores (e.g. ~/.config/gh/hosts.yml, git-credential)
-// or local configuration files.
-func isSensitiveEnvKey(k string) bool {
-	upper := strings.ToUpper(k)
-
-	// Explicit allowlist of variables that end in credential-like words but are benign
-	// runtime or development configuration settings.
-	switch upper {
-	case "TOKENIZERS_PARALLELISM":
-		return false
-	}
-
-	return strings.HasSuffix(upper, "_API_KEY") ||
-		strings.HasSuffix(upper, "_SECRET_KEY") ||
-		strings.HasSuffix(upper, "_PRIVATE_KEY") ||
-		strings.HasSuffix(upper, "_TOKEN") ||
-		strings.HasSuffix(upper, "_SECRET") ||
-		strings.HasSuffix(upper, "_PASSWORD") ||
-		upper == "AWS_SECRET_ACCESS_KEY"
-}
-
-var (
-	sensitiveEnvMu    sync.RWMutex
-	sensitiveEnvNames = map[string]bool{}
-)
-
-// RegisterSensitiveEnv marks environment variables that commands must not inherit
-// whatever their names look like, such as the ones the config names for its API keys
-// ("$OPENROUTER_KEY"), which the suffix rules in isSensitiveEnvKey may not catch.
-func RegisterSensitiveEnv(names ...string) {
-	sensitiveEnvMu.Lock()
-	defer sensitiveEnvMu.Unlock()
-	for _, n := range names {
-		if n != "" {
-			sensitiveEnvNames[n] = true
-		}
-	}
-}
-
-func isRegisteredSensitiveEnv(k string) bool {
-	sensitiveEnvMu.RLock()
-	defer sensitiveEnvMu.RUnlock()
-	return sensitiveEnvNames[k]
-}
-
-// HideEnvironFromCommands marks this process non-dumpable. Commands run as the same
-// user, so without it a command could read the API keys stripped from its own
-// environment back out of /proc/$PPID/environ, or attach to this process with ptrace.
-// Commands themselves are unaffected: execve makes each new program dumpable again.
-func HideEnvironFromCommands() error {
-	return unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
 }

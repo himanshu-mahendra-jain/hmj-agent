@@ -28,7 +28,7 @@ func TestTurnFooterReportsCacheAndTruncation(t *testing.T) {
 		fmt.Fprint(w, "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"+
 			"\"usage\":{\"input_tokens\":1000,\"output_tokens\":50,\"total_tokens\":1050,\"prompt_details\":{\"cached_tokens\":800}}}}\n\n")
 	})
-	cfg := p.config(0)
+	cfg := p.config()
 	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
 	conv := &session.Conversation{ID: "1", Model: mockModel}
 
@@ -133,7 +133,7 @@ func TestTurnFooterNamesFastMode(t *testing.T) {
 func TestUnknownToolCallIsAnsweredWithAnError(t *testing.T) {
 	t.Chdir(t.TempDir())
 	p := newScriptedProvider(t, toolCallReply("teleport", `{"to":"mars"}`), textReply("sorry"))
-	cfg := p.config(0)
+	cfg := p.config()
 	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
 	conv := &session.Conversation{ID: "1", Model: mockModel}
 
@@ -213,7 +213,7 @@ func TestReasoningBeforeToolCallIsClosed(t *testing.T) {
 		fmt.Fprint(w, "event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"need a listing\"}\n\n")
 		toolCallReply("teleport", `{}`)(w, r)
 	}, textReply("done"))
-	cfg := p.config(0)
+	cfg := p.config()
 	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
 	conv := &session.Conversation{ID: "1", Model: mockModel}
 
@@ -240,7 +240,7 @@ func TestReasoningBeforeToolCallIsClosed(t *testing.T) {
 func TestFailedRequestIsRecordedInTheTranscript(t *testing.T) {
 	t.Chdir(t.TempDir())
 	p := newScriptedProvider(t, statusReply(http.StatusBadRequest, `{"error":{"message":"context too long"}}`))
-	cfg := p.config(0)
+	cfg := p.config()
 	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
 	conv := &session.Conversation{ID: "1", Model: mockModel}
 

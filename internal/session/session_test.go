@@ -288,9 +288,9 @@ func TestConversationNotFoundErrors(t *testing.T) {
 	}
 }
 
-// Save compacts only the active conversation: inactive ones were compacted when they
-// were last active and must not be rewritten on every save.
-func TestSaveCompactsOnlyActiveConversation(t *testing.T) {
+// Save writes conversations as they are: no tool output is shortened, in the active conversation
+// or any other.
+func TestSaveKeepsToolOutput(t *testing.T) {
 	sm := LoadSessionManager(filepath.Join(t.TempDir(), "sessions.json"), config.ModelRef{Provider: "p", Model: "m"})
 	bulky := strings.Repeat("output line\n", 100)
 	fill := func(c *Conversation) {
@@ -308,16 +308,14 @@ func TestSaveCompactsOnlyActiveConversation(t *testing.T) {
 	if err := sm.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if inactive.Messages[2].Content != bulky {
-		t.Error("inactive conversation was compacted")
-	}
-	if active.Messages[2].Content == bulky {
-		t.Error("active conversation was not compacted")
+	if inactive.Messages[2].Content != bulky || active.Messages[2].Content != bulky {
+		t.Error("tool output was shortened on save")
 	}
 }
 
-// Credentials in the conversation are masked in the session file but kept in memory.
-func TestSaveRedactsCredentials(t *testing.T) {
+// Credentials in the conversation are saved as they are, so a resumed conversation is the one the
+// model produced.
+func TestSaveKeepsCredentials(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	sm := LoadSessionManager(path, config.ModelRef{Provider: "p", Model: "m"})
 	const key = "sk-proj-0123456789abcdefghijklmn"
@@ -326,18 +324,8 @@ func TestSaveRedactsCredentials(t *testing.T) {
 	if err := sm.Save(); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), key) || !strings.Contains(string(data), "OPENAI_API_KEY=[REDACTED]") {
-		t.Errorf("session file not redacted: %s", data)
-	}
-	if !strings.Contains(conv.Messages[len(conv.Messages)-1].Content, key) {
-		t.Error("in-memory conversation was redacted")
-	}
-	if got := LoadSessionManager(path, config.ModelRef{}).Active().Messages; !strings.Contains(got[len(got)-1].Content, "[REDACTED]") {
-		t.Error("redacted session did not load back")
+	if got := LoadSessionManager(path, config.ModelRef{}).Active().Messages; got[len(got)-1].Content != "OPENAI_API_KEY="+key {
+		t.Errorf("loaded tool output = %q, want it as saved", got[len(got)-1].Content)
 	}
 }
 

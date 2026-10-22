@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"testing"
 
 	"hmj-agent/internal/chat"
@@ -20,13 +19,13 @@ func TestBeginTurnKeepsSystemPromptOfStartedConversation(t *testing.T) {
 		{Role: "user", Content: "first"},
 		{Role: "assistant", Content: "reply"},
 	}}
-	r.beginTurn(context.Background(), started, "second")
+	r.beginTurn(started, "second")
 	if started.Messages[0].Content != "ORIGINAL" {
 		t.Errorf("system prompt of a started conversation changed to %q", started.Messages[0].Content)
 	}
 
 	fresh := &session.Conversation{}
-	r.beginTurn(context.Background(), fresh, "hello")
+	r.beginTurn(fresh, "hello")
 	if len(fresh.Messages) < 2 || fresh.Messages[0].Role != "system" || fresh.Messages[0].Content != session.CurrentSystemPrompt() {
 		t.Errorf("new conversation messages = %+v, want the current system prompt first", fresh.Messages)
 	}
