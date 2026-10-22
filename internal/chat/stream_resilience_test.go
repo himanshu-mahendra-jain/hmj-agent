@@ -178,6 +178,25 @@ func TestAnthropicMaxOutputTokensAndEffort(t *testing.T) {
 	}
 }
 
+// TestAnthropicSpeed checks that a model set to fast mode sends speed "fast", and that an unset
+// speed sends no speed field.
+func TestAnthropicSpeed(t *testing.T) {
+	fast, err := json.Marshal(anthropicRequestFor(config.Model{ID: "m", Speed: "fast"}, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fast), `"speed":"fast"`) {
+		t.Errorf("fast model request = %s, want speed fast", fast)
+	}
+	def, err := json.Marshal(anthropicRequestFor(config.Model{ID: "m"}, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(def), `"speed"`) {
+		t.Errorf("unset model request = %s, want no speed", def)
+	}
+}
+
 // TestAnthropicStrictToolsAndHeaders checks strict tool flags and that only x-api-key authenticates.
 func TestAnthropicStrictToolsAndHeaders(t *testing.T) {
 	tools := convertToolsToAnthropic([]ToolDefinition{{Type: "function", Function: FunctionDefinition{Name: "t"}}})

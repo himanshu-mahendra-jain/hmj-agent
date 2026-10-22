@@ -25,10 +25,13 @@ func TestFirstRunCreatesStarterConfig(t *testing.T) {
 		t.Errorf("config directory mode = %v (err %v), want 0700", fi.Mode().Perm(), err)
 	}
 
-	// Second run: the untouched starter config loads; cleanEnv unset both key variables.
+	// Second run: the untouched starter config loads. cleanEnv unsets the key variables, so each
+	// provider warns that its key variable is not set.
 	s = e.Start()
+	s.Expect("config warning: provider anthropic: apiKey refers to $ANTHROPIC_API_KEY, which is not set")
 	s.Expect("config warning: provider gemini: apiKey refers to $GEMINI_API_KEY, which is not set")
 	s.Expect("config warning: provider openai: apiKey refers to $OPENAI_API_KEY, which is not set")
+	s.Expect("config warning: provider openai-completions: apiKey refers to $OPENAI_API_KEY, which is not set")
 	s.ExpectPrompt()
 	s.Quit()
 }

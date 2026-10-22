@@ -931,8 +931,8 @@ func TestStreamChatAnthropicMessages(t *testing.T) {
 	if receivedKey != "sk-ant-testkey" {
 		t.Errorf("expected x-api-key sk-ant-testkey, got %s", receivedKey)
 	}
-	if receivedVer != "2023-06-01" {
-		t.Errorf("expected anthropic-version 2023-06-01, got %s", receivedVer)
+	if receivedVer != "2026-10-21" {
+		t.Errorf("expected anthropic-version 2026-10-21, got %s", receivedVer)
 	}
 
 	// Verify request payload hoisted system prompt (as a content block with a

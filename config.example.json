@@ -1,8 +1,35 @@
 {
   "accessibility": false,
   "providers": {
+    "anthropic": {
+      "baseUrl": "https://api.anthropic.com",
+      "api": "anthropic",
+      "apiKey": "$ANTHROPIC_API_KEY",
+      "models": [
+        {
+          "id": "claude-haiku-5-5",
+          "effort": "high"
+        },
+        {
+          "id": "claude-opus-5-5",
+          "effort": "high",
+          "speed": "fast"
+        }
+      ]
+    },
+    "gemini": {
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "api": "gemini",
+      "apiKey": "$GEMINI_API_KEY",
+      "models": [
+        {
+          "id": "gemini-3.8-flash"
+        }
+      ]
+    },
     "openai": {
       "baseUrl": "https://api.openai.com/v1",
+      "api": "responses",
       "apiKey": "$OPENAI_API_KEY",
       "models": [
         {
@@ -10,13 +37,13 @@
         }
       ]
     },
-    "gemini": {
-      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
-      "apiKey": "$GEMINI_API_KEY",
-      "api": "gemini",
+    "openai-completions": {
+      "baseUrl": "https://api.openai.com/v1",
+      "api": "completions",
+      "apiKey": "$OPENAI_API_KEY",
       "models": [
         {
-          "id": "gemini-3.8-flash"
+          "id": "gpt-6-luna"
         }
       ]
     }

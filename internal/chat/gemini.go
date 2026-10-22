@@ -439,7 +439,7 @@ func (a *geminiAccumulator) result() (Message, *TokenUsage) {
 			if args == "" {
 				args = "{}"
 				if st.startArgs != nil {
-					if raw, err := json.Marshal(st.startArgs); err == nil {
+					if raw, err := encodeRequestBody(st.startArgs); err == nil {
 						args = string(raw)
 					}
 				}
@@ -517,7 +517,7 @@ func (c *Client) streamGeminiOnce(
 		reqPayload.GenerationConfig = gc
 	}
 
-	body, err := json.Marshal(reqPayload)
+	body, err := encodeRequestBody(reqPayload)
 	if err != nil {
 		return Message{}, nil, 0, false, err
 	}

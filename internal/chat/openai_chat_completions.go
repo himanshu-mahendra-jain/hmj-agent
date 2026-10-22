@@ -98,8 +98,12 @@ func convertMessagesToCompletions(messages []Message) []completionsMessage {
 }
 
 type completionsAccumulator struct {
-	startTime        time.Time
+	startTime time.Time
+	// firstToken is when output was first shown, which decides whether a retry would repeat it.
+	// firstOutput is when the first reasoning, text or tool-call delta arrived; it times the
+	// response.
 	firstToken       time.Time
+	firstOutput      time.Time
 	contentBuilder   strings.Builder
 	toolCallsByIndex map[int]*ToolCall
 	toolArgsByIndex  map[int]*strings.Builder
@@ -154,6 +158,9 @@ func (a *completionsAccumulator) handle(data string, onReasoning, onDelta func(s
 		if reasoning == "" {
 			reasoning = choice.Delta.Thought
 		}
+		if a.firstOutput.IsZero() && (reasoning != "" || choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0) {
+			a.firstOutput = time.Now()
+		}
 		if reasoning != "" {
 			// Shown reasoning is delivered output: a retry would show it a second time.
 			if a.firstToken.IsZero() {
@@ -206,8 +213,8 @@ func (a *completionsAccumulator) handle(data string, onReasoning, onDelta func(s
 func (a *completionsAccumulator) result() (Message, *TokenUsage) {
 	totalDuration := time.Since(a.startTime)
 	var ttft time.Duration
-	if !a.firstToken.IsZero() {
-		ttft = a.firstToken.Sub(a.startTime)
+	if !a.firstOutput.IsZero() {
+		ttft = a.firstOutput.Sub(a.startTime)
 	}
 
 	usage := a.usage
@@ -227,8 +234,8 @@ func (a *completionsAccumulator) result() (Message, *TokenUsage) {
 		usage.Duration = totalDuration
 		usage.TTFT = ttft
 		usage.FinishReason = a.finishReason
-		if usage.CompletionTokens > 0 && !a.firstToken.IsZero() {
-			genSec := time.Since(a.firstToken).Seconds()
+		if usage.CompletionTokens > 0 && !a.firstOutput.IsZero() {
+			genSec := time.Since(a.firstOutput).Seconds()
 			if genSec > 0 {
 				usage.TokensPerSecond = float64(usage.CompletionTokens) / genSec
 			}
@@ -289,7 +296,7 @@ func (c *Client) streamCompletionsOnce(
 		}
 	}
 
-	body, err := json.Marshal(reqPayload)
+	body, err := encodeRequestBody(reqPayload)
 	if err != nil {
 		return Message{}, nil, 0, false, err
 	}

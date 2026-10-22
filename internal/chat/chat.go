@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -92,6 +93,9 @@ type TokenUsage struct {
 	FinishReason    string        `json:"-"`
 	// RefusalCategory is the safety category the provider gave for a refusal, when it reported one.
 	RefusalCategory string `json:"-"`
+	// Speed is the speed the provider reports the response ran at ("fast" or "standard" for
+	// Anthropic), or empty when it reports none.
+	Speed string `json:"-"`
 }
 
 // PromptTokensDetails holds prompt-cache counters, which providers report under different field
@@ -176,6 +180,10 @@ func NewClient(cfg config.Config) *Client {
 		ExpectContinueTimeout: 1 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		// Without this, Go asks for gzip on every request. An event stream of small deltas
+		// gains little from compression, and a compressing proxy may hold the stream back
+		// before passing it on.
+		DisableCompression: true,
 	}
 
 	return &Client{
@@ -404,6 +412,24 @@ func (r *idleReader) Read(p []byte) (int, error) {
 	return r.ReadCloser.Read(p)
 }
 
+// logResponse records in the diagnostic log how a provider answered a model request: how long
+// its response headers took, the HTTP version, any content encoding and the provider's request
+// ID, which its support needs to look into a request.
+func logResponse(req *http.Request, resp *http.Response, headersAfter time.Duration) {
+	requestID := resp.Header.Get("request-id")
+	if requestID == "" {
+		requestID = resp.Header.Get("x-request-id")
+	}
+	logging.L().Debug("http response",
+		"host", req.URL.Host,
+		"status", resp.StatusCode,
+		"proto", resp.Proto,
+		"content_encoding", resp.Header.Get("Content-Encoding"),
+		"request_id", requestID,
+		"headers_after", headersAfter,
+	)
+}
+
 // doStream sends req and feeds each server-sent event to onEvent. Failures are classified
 // for the retry loop: context cancellation is never retryable, a network error or a stall
 // before the first token (reported by started) is retryable, transient errors reported
@@ -414,6 +440,7 @@ func (c *Client) doStream(ctx context.Context, req *http.Request, onEvent func(e
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 
+	sent := time.Now()
 	resp, err := c.HTTPClient.Do(req.WithContext(streamCtx))
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -422,6 +449,7 @@ func (c *Client) doStream(ctx context.Context, req *http.Request, onEvent func(e
 		return 0, IsRetryableNetError(err), err
 	}
 	defer resp.Body.Close()
+	logResponse(req, resp, time.Since(sent))
 
 	watchdog := newIdleWatchdog(StreamIdleTimeout, cancelStream)
 	defer watchdog.Stop()
@@ -445,4 +473,11 @@ func (c *Client) doStream(ctx context.Context, req *http.Request, onEvent func(e
 		return 0, !started(), err
 	}
 	return 0, !started() && IsRetryableNetError(err), err
+}
+
+// encodeRequestBody encodes a request body for a provider with map keys sorted. encoding/json/v2
+// otherwise walks maps in random order, so a tool schema or replayed tool-call arguments changed key
+// order from run to run, and the prompt the API caches changed with it.
+func encodeRequestBody(v any) ([]byte, error) {
+	return json.Marshal(v, json.Deterministic(true))
 }

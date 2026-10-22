@@ -38,7 +38,7 @@ func TestProbeModelWireAPIs(t *testing.T) {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
-			if r.Header.Get("anthropic-version") == "" {
+			if r.Header.Get("anthropic-version") != AnthropicVersion {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}

@@ -205,8 +205,9 @@ type starterConfigCreated struct{ path string }
 
 func (e *starterConfigCreated) Error() string {
 	return "created a starter config at " + e.path + "\n" +
-		"Add your provider, model and API key there (or set the $OPENAI_API_KEY / $GEMINI_API_KEY\n" +
-		"variables it reads keys from), remove the providers you do not use, then run hmj again."
+		"Add your provider, model and API key there (or set the $ANTHROPIC_API_KEY / $OPENAI_API_KEY /\n" +
+		"$GEMINI_API_KEY variables it reads keys from), remove the providers you do not use, then run\n" +
+		"hmj again."
 }
 
 // loadConfig reads the config at path. When the file is missing or empty it writes a

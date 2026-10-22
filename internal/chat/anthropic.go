@@ -19,6 +19,11 @@ import (
 // enough that a whole file written by write_file is not cut off.
 const DefaultAnthropicMaxTokens = 32000
 
+// AnthropicVersion is the Messages API version sent in the anthropic-version header. The changes
+// it brought over 2023-06-01 (no sampling parameters, no document blocks in assistant messages,
+// no citations in user messages) concern nothing hmj sends.
+const AnthropicVersion = "2026-10-21"
+
 type anthropicRequest struct {
 	Model        string                 `json:"model"`
 	System       []anthropicContent     `json:"system,omitempty"`
@@ -28,6 +33,8 @@ type anthropicRequest struct {
 	Tools        []anthropicTool        `json:"tools,omitempty"`
 	Thinking     *anthropicThinking     `json:"thinking,omitempty"`
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+	// Speed "fast" requests fast mode; omitted means standard speed.
+	Speed string `json:"speed,omitempty"`
 }
 
 // anthropicThinking enables adaptive thinking. Display "summarized" streams the reasoning so it
@@ -211,6 +218,8 @@ type anthropicUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	// Speed is the speed the request ran at, "fast" or "standard", when the API reports it.
+	Speed string `json:"speed"`
 }
 
 // anthropicStopDetails explains a stop_reason such as "refusal": the safety category and a short
@@ -228,8 +237,12 @@ type anthropicBlockAcc struct {
 }
 
 type anthropicAccumulator struct {
-	startTime        time.Time
+	startTime time.Time
+	// firstToken is when output was first shown, which decides whether a retry would repeat it.
+	// firstOutput is when the first content block began, including a tool call or thinking that
+	// shows no text; it times the response.
 	firstToken       time.Time
+	firstOutput      time.Time
 	contentBuilder   strings.Builder
 	toolCallsByIndex map[int]*ToolCall
 	toolArgsByIndex  map[int]*strings.Builder
@@ -285,8 +298,10 @@ func (a *anthropicAccumulator) handle(eventType, data string, onReasoning, onDel
 	case "message_start":
 		a.handleMessageStart(&ev)
 	case "content_block_start":
+		a.markOutput()
 		a.handleContentBlockStart(&ev)
 	case "content_block_delta":
+		a.markOutput()
 		a.handleContentBlockDelta(&ev, onReasoning, onDelta)
 	case "message_delta":
 		a.handleMessageDelta(&ev)
@@ -297,6 +312,13 @@ func (a *anthropicAccumulator) handle(eventType, data string, onReasoning, onDel
 	return nil
 }
 
+// markOutput records when the response's first content block began, once.
+func (a *anthropicAccumulator) markOutput() {
+	if a.firstOutput.IsZero() {
+		a.firstOutput = time.Now()
+	}
+}
+
 // handleMessageStart records the input-side token usage and cache counters.
 func (a *anthropicAccumulator) handleMessageStart(ev *anthropicEvent) {
 	u := ev.Message.Usage
@@ -304,6 +326,9 @@ func (a *anthropicAccumulator) handleMessageStart(ev *anthropicEvent) {
 	// includes them, matching the prompt_tokens the other protocols report.
 	a.usage.InputTokens = u.InputTokens
 	a.usage.PromptTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	if u.Speed != "" {
+		a.usage.Speed = u.Speed
+	}
 	if u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 {
 		a.usage.CachedTokens = u.CacheReadInputTokens
 		a.usage.PromptTokensDetails = &PromptTokensDetails{
@@ -378,7 +403,7 @@ func (a *anthropicAccumulator) handleContentBlockDelta(ev *anthropicEvent, onRea
 }
 
 // handleMessageDelta maps the stop reason to the OpenAI-style finish reason, keeps refusal details
-// and records output token usage.
+// and records output token usage and the speed used.
 func (a *anthropicAccumulator) handleMessageDelta(ev *anthropicEvent) {
 	if ev.Delta.StopReason != nil {
 		switch *ev.Delta.StopReason {
@@ -399,6 +424,9 @@ func (a *anthropicAccumulator) handleMessageDelta(ev *anthropicEvent) {
 		a.usage.OutputTokens = ev.Usage.OutputTokens
 		a.usage.CompletionTokens = ev.Usage.OutputTokens
 	}
+	if ev.Usage.Speed != "" {
+		a.usage.Speed = ev.Usage.Speed
+	}
 }
 
 // handleErrorEvent turns an Anthropic "error" event into a Go error. Overload and transient API
@@ -417,8 +445,8 @@ func (a *anthropicAccumulator) handleErrorEvent(ev *anthropicEvent, trimmed stri
 func (a *anthropicAccumulator) result() (Message, *TokenUsage) {
 	totalDuration := time.Since(a.startTime)
 	var ttft time.Duration
-	if !a.firstToken.IsZero() {
-		ttft = a.firstToken.Sub(a.startTime)
+	if !a.firstOutput.IsZero() {
+		ttft = a.firstOutput.Sub(a.startTime)
 	}
 
 	usage := a.usage
@@ -434,8 +462,8 @@ func (a *anthropicAccumulator) result() (Message, *TokenUsage) {
 	if a.refusal != nil {
 		usage.RefusalCategory = a.refusal.Category
 	}
-	if usage.CompletionTokens > 0 && !a.firstToken.IsZero() {
-		genSec := time.Since(a.firstToken).Seconds()
+	if usage.CompletionTokens > 0 && !a.firstOutput.IsZero() {
+		genSec := time.Since(a.firstOutput).Seconds()
 		if genSec > 0 {
 			usage.TokensPerSecond = float64(usage.CompletionTokens) / genSec
 		}
@@ -469,6 +497,13 @@ func (a *anthropicAccumulator) result() (Message, *TokenUsage) {
 }
 
 // anthropicRequestFor builds the Messages API payload for one turn.
+// marshalAnthropicRequest encodes the Messages request body with map keys sorted. encoding/json/v2
+// otherwise walks maps in random order, so a tool's schema changed key order from run to run, and
+// the bytes the API caches changed with it.
+func marshalAnthropicRequest(model config.Model, messages []Message, tools []ToolDefinition) ([]byte, error) {
+	return encodeRequestBody(anthropicRequestFor(model, messages, tools))
+}
+
 func anthropicRequestFor(model config.Model, messages []Message, tools []ToolDefinition) anthropicRequest {
 	systemPrompt, anthropicMsgs := convertMessagesToAnthropic(messages)
 	maxTokens := DefaultAnthropicMaxTokens
@@ -481,6 +516,7 @@ func anthropicRequestFor(model config.Model, messages []Message, tools []ToolDef
 		MaxTokens: maxTokens,
 		Stream:    true,
 		Tools:     convertToolsToAnthropic(tools),
+		Speed:     model.Speed,
 	}
 	if model.ThinkingEnabled() {
 		reqPayload.Thinking = &anthropicThinking{Type: "adaptive", Display: "summarized"}
@@ -537,7 +573,7 @@ func (c *Client) streamAnthropicOnce(
 	onReasoning func(string),
 	onDelta func(string),
 ) (Message, *TokenUsage, time.Duration, bool, error) {
-	body, err := json.Marshal(anthropicRequestFor(model, messages, tools))
+	body, err := marshalAnthropicRequest(model, messages, tools)
 	if err != nil {
 		return Message{}, nil, 0, false, err
 	}
@@ -549,7 +585,7 @@ func (c *Client) streamAnthropicOnce(
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("anthropic-version", AnthropicVersion)
 	if key := config.ResolveAPIKey(provider.APIKey); key != "" {
 		req.Header.Set("x-api-key", key)
 	}

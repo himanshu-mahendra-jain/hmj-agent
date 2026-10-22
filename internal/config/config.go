@@ -178,6 +178,9 @@ type Model struct {
 	// provider and keeps it in the transcript; "off" sends no reasoning parameters, for models or
 	// compatible endpoints that reject them.
 	Thinking string `json:"thinking,omitempty"`
+	// Speed "fast" asks Anthropic for fast mode: faster output at premium pricing, on the models
+	// that offer it. Unset means standard speed. Other protocols ignore it.
+	Speed string `json:"speed,omitempty"`
 }
 
 // ThinkingEnabled reports whether reasoning parameters should be sent for the model. It is true
@@ -308,8 +311,11 @@ var validEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 // validThinking are the values a model's thinking option may take.
 var validThinking = []string{"", "adaptive", "off"}
 
+// validSpeeds are the values a model's speed option may take.
+var validSpeeds = []string{"", "fast"}
+
 // validate checks that every provider has a base URL and a known wire protocol, and that every
-// model's effort and output limit are valid.
+// model's effort, thinking, speed and output limit are valid.
 func (c Config) validate() error {
 	for _, name := range slices.Sorted(maps.Keys(c.Providers)) {
 		p := c.Providers[name]
@@ -329,6 +335,9 @@ func (c Config) validate() error {
 			}
 			if !slices.Contains(validThinking, m.Thinking) {
 				return fmt.Errorf("provider %s model %s has unknown thinking %q (valid options: adaptive, off)", name, m.ID, m.Thinking)
+			}
+			if !slices.Contains(validSpeeds, m.Speed) {
+				return fmt.Errorf("provider %s model %s has unknown speed %q (valid options: fast)", name, m.ID, m.Speed)
 			}
 			if m.MaxOutputTokens < 0 {
 				return fmt.Errorf("provider %s model %s has negative maxOutputTokens %d", name, m.ID, m.MaxOutputTokens)

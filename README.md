@@ -1,23 +1,29 @@
 # HMJ Agent
 
-> A minimal coding agent harness in pure Go using only the standard library and official `golang.org/x` modules, with zero 3rd-party dependencies, for Linux.
+> A minimal coding agent for the terminal, written in pure Go with the standard library and official `golang.org/x` modules. It runs on Linux.
 
-## Core Principles
+## Quick start
 
-1. **Native**: Pure Go using only the standard library and official `golang.org/x` modules, with zero 3rd-party dependencies, statically linked (`CGO_ENABLED=0`).
-2. **Unrestricted by Design**: Built for a dedicated VM. File tools accept any relative, absolute, or `~` path, and `run_command` runs any command in any directory (`workdir`). No path sandbox or command blocklist.
-3. **Always-Expanded Stream**: No collapsed folds or hidden outputs. Model reasoning, tool parameters, visual diffs, and execution output stream live to the terminal.
-4. **Instant Halting & Signal Safety**: Raw POSIX termios listener halts token streaming or active tool execution immediately on `Esc` or `Ctrl+C`. Traps `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to restore terminal state and persist sessions.
-5. **Seamless Multi-Line Input**: Bracketed paste mode captures multi-line prompts, code snippets, and drag-and-drop file paths cleanly without premature submission. The prompt carries OSC 133 marks, so terminals with shell integration (kitty, Ghostty, WezTerm, iTerm2) can move the cursor on click and jump between prompts.
-6. **Multi-Protocol & Multi-Model**: Supports modern OpenAI Responses API (`POST /responses`), legacy OpenAI Chat Completions (`POST /chat/completions`), and Anthropic Messages (`POST /v1/messages`), and native Google Gemini (`POST /v1beta/interactions`, the Interactions API, with thought-signature round-tripping), with on-the-fly model switching (`Ctrl+O`).
-7. **Sticky Model & Workspace-Scoped Sessions**: Active model and sessions persist per project under `~/.hmj/projects/<slug>/sessions.json` via deterministic workspace path hashing, avoiding multi-tab collisions across repos with atomic `fsync` and `.corrupt` backups. Override via `HMJ_SESSIONS`.
-8. **High-Performance Streaming**: `sync.Pool` buffer reuse in the SSE reader and incremental `strings.Builder` accumulators eliminate quadratic heap allocations during token streaming.
-9. **Dual-Tier Context Compaction**: Between turns, tool outputs are pruned to 10 head + 5 tail lines (keeping the latest 2 in full). The transcript is never rewritten mid-turn, so the provider's prompt cache prefix stays valid across tool steps. Once a conversation passes 6 turns, the model itself is asked to summarize the turns older than the last 3, and its summary takes their place. Token counts reported by the provider are the baseline for the context estimate.
-10. **Fault-Tolerant Retry Engine**: Randomized exponential backoff handles HTTP `429`, `408`, `529` (overloaded) and `5xx`, parsing `Retry-After` headers and human-readable body reset hints (`"try again in 4m39s"`) while failing fast on other `4xx` client errors. Overload errors streamed inside a response are retried too, until output has started. A response that delivers no bytes for 120 seconds is aborted as stalled.
-11. **Process Hygiene**: `run_command` strips LLM credentials from the child env (names ending in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, plus every variable the config names as an `"apiKey": "$VAR"`), and hmj marks itself non-dumpable so commands cannot read them back from `/proc/<hmj pid>/environ`, enforcing `Setpgid: true` and 64KB output limits.
-12. **Workspace Context Sync**: Discovers `AGENTS.md` (or `README.md`), reading up to the first 160 lines to keep context tight and cache-friendly. Guidelines must never exceed 160 lines.
-13. **Accessibility & Clean Standards**: Respects `NO_COLOR` and provides `--accessible` (`-a`) with ASCII borders and explicit status badges (`[OK]`, `[NOTE]`, `[ERROR]`). Idiomatic modern Go (Go 1.22–1.27: `encoding/json/v2`, `math/rand/v2`, `netip`, `slices`, `maps`, `cmp.Or`, range-over-int) with zero error suppression, preserved error chains (`%w`), and co-located in-package unit tests.
-14. **Deterministic Sequential Execution**: Mutating tools (`edit_file`, `write_file`, `run_command`) execute synchronously rather than asynchronously in the background. Because local I/O is sub-millisecond, sequential execution eliminates torn writes and test/edit race conditions, prevents token-wasting recovery loops from phantom build failures, avoids context pollution from speculative reads, and preserves immutable 50–90% discounted KV-cache prefixes across all providers.
+1. Build and install: `make build` installs the binary to `~/.local/bin/hmj`.
+2. Run `hmj`. On the first run it writes `~/.hmj/config.json` from [config.example.json](config.example.json) and exits.
+3. Set the key variables the file names, such as `export ANTHROPIC_API_KEY=...`, then run `hmj` again.
+
+## Core principles
+
+1. **Native.** Pure Go with the standard library and official `golang.org/x` modules, and no third-party dependencies. The binary is statically linked (`CGO_ENABLED=0`).
+2. **Unrestricted by design.** Built for a dedicated VM. File tools accept any relative, absolute or `~` path, and `run_command` runs any command in any directory (`workdir`). There is no path sandbox or command blocklist.
+3. **Always expanded.** Nothing is folded or hidden. Model reasoning, tool parameters, visual diffs and command output stream live to the terminal.
+4. **Instant halt, signal safety.** A raw termios listener stops token streaming or a running tool at once on `Esc` or `Ctrl+C`. hmj traps `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT` to restore the terminal and save sessions.
+5. **Multi-line input.** Bracketed paste captures multi-line prompts, code snippets and dragged file paths without submitting early. The prompt carries OSC 133 marks, so terminals with shell integration (kitty, Ghostty, WezTerm, iTerm2) can move the cursor on click and jump between prompts.
+6. **Multiple protocols and models.** Supports the OpenAI Responses API (`POST /responses`), the legacy OpenAI Chat Completions API (`POST /chat/completions`), the Anthropic Messages API (`POST /v1/messages`), and the Google Gemini Interactions API (`POST /v1beta/interactions`, with thought-signature round-tripping). Switch models on the fly with `Ctrl+O`.
+7. **Sticky model, per-project sessions.** The active model and sessions persist per project under `~/.hmj/projects/<slug>/sessions.json`. The project path is hashed to pick the file, so tabs in different repos do not collide. Writes are atomic (`fsync`), with `.corrupt` backups. Override with `HMJ_SESSIONS`.
+8. **Fast streaming.** The SSE reader reuses buffers from a `sync.Pool`, and accumulators use `strings.Builder`, so token streaming does not allocate quadratically.
+9. **Two-tier context compaction.** Between turns, tool output is pruned to 10 head and 5 tail lines, and the latest two results stay in full. The transcript is never rewritten mid-turn, so the provider's prompt cache prefix stays valid across tool steps. Once a conversation passes six turns, the model summarizes every turn older than the last three, and the summary replaces them. Token counts reported by the provider are the baseline for the context estimate.
+10. **Retries.** Randomized exponential backoff handles HTTP `429`, `408`, `529` (overloaded) and `5xx`. It honours `Retry-After` and reset hints in the body (such as "try again in 4m39s"), and fails fast on other `4xx` errors. Overload errors streamed inside a response are retried too, until output has started. A response that delivers no bytes for 120 seconds is aborted as stalled.
+11. **Process hygiene.** `run_command` strips LLM credentials from the child environment: names ending in `_API_KEY`, `_TOKEN`, `_SECRET` or `_PASSWORD`, and every variable named by an `"apiKey": "$VAR"`. hmj marks itself non-dumpable, so commands cannot read its environment from `/proc/<hmj pid>/environ`. Commands run with `Setpgid: true` and 64KB output limits.
+12. **Workspace guidelines.** hmj reads `AGENTS.md`, or `README.md` if there is none, up to the first 160 lines, to keep context small and cache-friendly. Guidelines must never exceed 160 lines.
+13. **Accessibility and clean code.** Respects `NO_COLOR` and offers `--accessible`, with ASCII borders and text badges (`[OK]`, `[NOTE]`, `[ERROR]`). It uses modern Go (`encoding/json/v2`, `math/rand/v2`, `netip`, `slices`, `maps`, `cmp.Or`, range-over-int), with no ignored errors, wrapped error chains (`%w`) and co-located unit tests.
+14. **Sequential tools.** Mutating tools (`edit_file`, `write_file`, `run_command`) run one at a time, not in the background. Local I/O takes under a millisecond, so sequential runs avoid torn writes and test/edit races, avoid recovery loops from phantom build failures, and avoid speculative reads that pollute context. This keeps the 50–90% discounted KV-cache prefixes valid across all providers.
 
 ## Architecture
 
@@ -48,107 +54,103 @@
  └─────────────────────────────┘ └─────────────────────────────┘
 ```
 
-## Build & Development
+## Build and development
 
-```bash
-make
-```
+* **Build flags:** `-s -w` strips debug data, `-trimpath` removes host paths, and `CGO_ENABLED=0` makes the binary static and libc-free.
+* **Testing:**
+  - Unit tests sit beside the code (`./internal/...`), and integration tests live in `./tests`.
+  - `make e2e` drives the built binary in a pseudo terminal against a scripted mock provider, and checks the rendered screen with a built-in terminal emulator. `make e2e-live` adds one turn against a real provider.
+  - Also covered: native Go fuzzing (`make fuzz`), multi-iteration race stress (`make race`), randomized execution (`-shuffle=on`), parent context cancellation, subprocess tree termination, retry and backoff, multi-protocol streaming, SSE buffer pooling, and conversation persistence.
 
-* **Build Flags**: `-s -w` strips debug data; `-trimpath` removes host paths; `CGO_ENABLED=0` ensures static libc-free portability.
-* **CLI Flags**:
-  - `--version`, `-v`: Print current HMJ Agent version and exit.
-  - `--help`, `-h`: Print shortcuts and banner cheat sheet.
-  - `--health`: Check latency & health of all configured providers and models.
-  - `--accessible`, `--accessibility`, `-a`: Enable accessibility mode (`ACCESSIBILITY=1` or `"accessibility": true` also work). Output is append-only, with no cursor movement or redraws: the spinner prints `[working]` lines, menus are numbered lists (type a number, text to filter, `r <n> <name>` to rename, `d <n>` to delete, empty or `q` to cancel), a line ending in `\` continues onto the next prompt line, and keyboard shortcuts are replaced by slash commands. ASCII borders, text badges (`[OK]`, `[ERROR]`), `[RESULT name]` blocks for tool output and remediation hints are used throughout.
-  - `--high-contrast`: Bright, bold palette with no dim text, underlined removed lines and bold `+`/`-` markers (`HIGH_CONTRAST=1` or `"highContrast": true` also work). Flags win over the config file.
-  - `--no-color`: Disable all ANSI color styling (adhering to the [NO_COLOR](https://no-color.org) standard).
-  - `--strict`: Refuse to start (and ignore config reloads) when the config has a security warning: a file readable by other users that holds a literal API key, or a key sent over plain `http://` to a host other than this machine. Without it these are printed as warnings.
-* **Test suite**: Comprehensive test matrix with co-located in-package unit tests (`./internal/...`) and integration suites (`./tests`), and an end-to-end suite (`./e2e`, `make e2e`) that drives the built binary in a pseudo terminal against a scripted mock provider, checking the rendered screen through a built-in terminal emulator (`make e2e-live` adds one turn against a real provider): native Go fuzzing (`make fuzz`), multi-iteration race stress (`make race`), randomized execution (`-shuffle=on`), parent context cancellation, subprocess tree termination, retry/backoff engines, multi-protocol streaming, SSE buffer pooling, and conversation persistence.
+## CLI flags
+
+- `--version`, `-v`: print the version and exit.
+- `--help`, `-h`: print the shortcuts and banner cheat sheet.
+- `--health`: check latency and health of all configured providers and models.
+- `--accessible`, `--accessibility`, `-a`: accessibility mode. `ACCESSIBILITY=1` or `"accessibility": true` also work. Output is append-only, with no cursor movement or redraws:
+  - the spinner prints `[working]` lines;
+  - menus are numbered lists: type a number, type text to filter, `r <n> <name>` renames, `d <n>` deletes, and an empty line or `q` cancels;
+  - a line ending in `\` continues onto the next prompt line;
+  - slash commands replace keyboard shortcuts;
+  - `[RESULT name]` blocks hold tool output and remediation hints.
+- `--high-contrast`: bright, bold palette with no dim text, underlined removed lines and bold `+`/`-` markers. `HIGH_CONTRAST=1` or `"highContrast": true` also work. Flags win over the config file.
+- `--no-color`: disable all ANSI color styling, following the [NO_COLOR](https://no-color.org) standard.
+- `--strict`: refuse to start, and ignore config reloads, when the config has a security warning. Warnings cover a file readable by other users that holds a literal API key, and a key sent over plain `http://` to a host other than this machine. Without `--strict` these are printed as warnings.
 
 ## Configuration
 
-On the first run, hmj writes a starter `~/.hmj/config.json` (mode 0600) from `config.example.json` and exits; add your provider, model and API key, then run it again (path overridable via `HMJ_CONFIG`; session storage via `HMJ_SESSIONS`). Set `HMJ_LOG` to a file path for an opt-in JSON-lines diagnostic log of tool runs, model steps, retries, config reloads and session saves.
+### First run
 
-Next to the config file the agent always keeps:
+On the first run, hmj writes a starter `~/.hmj/config.json` (mode 0600) from [config.example.json](config.example.json) and exits. Set the key variables the file names, then run hmj again. Paths can be changed with `HMJ_CONFIG` (config) and `HMJ_SESSIONS` (sessions). Set `HMJ_LOG` to a file path for an opt-in JSON-lines diagnostic log of tool runs, model steps, retries, config reloads and session saves.
 
-* `audit.log`: one JSON line per tool run (tool, arguments, duration, output size, error), rotated to `audit.log.1` at 10MB. `HMJ_AUDIT_LOG` moves it, or turns it off when set to `off`.
-* `backups/`: the previous content of every file `edit_file` or `write_file` changes, named `<timestamp>_<path with / as %>`. The newest 200 (up to 256MB) are kept.
+### Files next to the config
 
-API keys, tokens and private keys are masked as `[REDACTED]` in the saved session file, the audit and diagnostic logs, and provider error messages. The in-memory conversation, and so what the model sees, is unchanged. Use `"apiKey": "$ENV_VAR"` to keep keys out of the config file; keys written literally should be in a file only you can read (`chmod 600`). Provider requests never follow redirects, so a key is only ever sent to the configured `baseUrl`.
+- `audit.log`: one JSON line per tool run (tool, arguments, duration, output size, error). It rotates to `audit.log.1` at 10MB. `HMJ_AUDIT_LOG` moves it, or turns it off when set to `off`.
+- `backups/`: the previous content of every file that `edit_file` or `write_file` changes, named `<timestamp>_<path with / as %>`. The newest 200 (up to 256MB) are kept.
 
-The optional `"api"` field selects the wire protocol (`"responses"`, `"completions"`, `"anthropic"`, or `"gemini"`). It may be omitted. When the base URL settles the protocol (`generativelanguage.googleapis.com` selects `gemini`, or `completions` for its `/openai` compat path; an Anthropic host or a `/messages` suffix selects `anthropic`; a `/chat/completions` suffix selects `completions`), that is used. When it does not, as with a plain `/v1` base, hmj probes the endpoint once with an empty `{}` POST to the Responses, Anthropic Messages, Chat Completions and Gemini Interactions routes, in that order, five seconds each. The first route whose error answer shows it exists is used, and hmj writes it into the config file as that provider's `"api"` (keeping the rest of the file as you wrote it), so it is never probed again; delete the field to re-detect. When no route answers, Responses is used for that run. An explicit `"api"` is never probed.
+### API keys
 
-Each model may set `"contextWindow"`, its input limit in tokens (e.g. `{ "id": "gemini-3.8-flash", "contextWindow": 1000000 }`). When set, older turns are summarized, then older tool output pruned, before the conversation is estimated to fill 75% of it. Without it, older turns are summarized only once a conversation passes six turns. The summary is written by the conversation's own model, in one extra request made between turns, and replaces the older turns in every later request; if that request fails, the turns are kept and the summary is tried again next turn.
+Keys are masked as `[REDACTED]` in the saved session file, the audit and diagnostic logs, and provider errors. The in-memory conversation, and so what the model sees, is unchanged. Use `"apiKey": "$ENV_VAR"` to keep keys out of the file. A literal key should live in a file only you can read (`chmod 600`). Requests never follow redirects, so a key is only sent to the configured `baseUrl`.
 
-Each model may also set (e.g. `{ "id": "claude-opus-5-5", "maxOutputTokens": 64000, "effort": "high" }`):
+### Protocol (`api`)
 
-* `"maxOutputTokens"`: the most tokens one response may generate. Anthropic always sends a limit and defaults to `32000` when this is unset, so large `write_file` calls are not cut off. The other protocols send a limit only when this is set (`max_output_tokens`, `max_tokens`, or Gemini's `max_output_tokens`).
-* `"effort"`: how much reasoning the model spends, one of `low`, `medium`, `high`, `xhigh` or `max`. Anthropic sends it as `output_config.effort`. OpenAI Responses sends it as `reasoning.effort`. Gemini maps `low` and `medium` to the same thinking levels and `high`, `xhigh` and `max` to `high`. Gemini uses the Interactions API (`POST /v1beta/interactions`) and needs no config change: a `baseUrl` ending in `/v1beta` is used as is. Unset means the provider default.
-* `"thinking"`: `"adaptive"` (the default) requests reasoning from the provider; set `"off"` for a model or compatible endpoint that rejects reasoning parameters (for example a non-reasoning OpenAI model or a Claude model before 4.6), which then receives no reasoning fields at all.
+The optional `"api"` field selects the protocol: `"responses"`, `"completions"`, `"anthropic"` or `"gemini"`. It may be omitted.
 
-Reasoning is kept in the transcript and sent back: Anthropic thinking blocks with their signatures, and OpenAI reasoning items with their encrypted content, so multi-step tool turns stay valid. Reasoning summaries stream live. If a model declines a request under its safety classifier, the agent prints a `[the model declined this request ...]` notice that names the category when the provider gives one.
+- A known base URL selects the protocol. `generativelanguage.googleapis.com` selects `gemini` (or `completions` on its `/openai` path). An Anthropic host or a `/messages` suffix selects `anthropic`. A `/chat/completions` suffix selects `completions`.
+- Otherwise, as with a plain `/v1` base, hmj probes the endpoint once with an empty `{}` POST. It tries the Responses, Anthropic Messages, Chat Completions and Gemini Interactions routes in that order, five seconds each. The first route whose error answer shows it exists is used, and hmj writes it into the config as that provider's `"api"`, keeping the rest of the file as you wrote it. The probe never runs again; delete the field to re-detect. If no route answers, Responses is used for that run.
+- An explicit `"api"` is never probed.
 
-```json
-{
-  "accessibility": false,
-  "highContrast": false,
-  "providers": {
-    "openai": {
-      "baseUrl": "https://api.openai.com/v1",
-      "api": "responses",
-      "apiKey": "$OPENAI_API_KEY",
-      "models": [
-        { "id": "gpt-6-luna" }
-      ]
-    },
-    "gemini": {
-      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
-      "api": "gemini",
-      "apiKey": "$GEMINI_API_KEY",
-      "models": [
-        { "id": "gemini-3.8-flash" }
-      ]
-    }
-  }
-}
-```
+### Model settings
 
-## Shortcuts & Commands
+Each model in a provider's `models` list can set the options below. For example: `{ "id": "claude-opus-5-5", "maxOutputTokens": 64000, "effort": "high" }`.
+
+- `"contextWindow"`: the input limit in tokens, for example `{ "id": "gemini-3.8-flash", "contextWindow": 1000000 }`. When set, older turns are summarized, then older tool output is pruned, before the conversation is estimated to fill 75% of the window. Without it, older turns are summarized only once a conversation passes six turns. The conversation's own model writes the summary in one extra request between turns, and the summary replaces the older turns in every later request. If that request fails, the turns are kept and the summary is retried next turn.
+- `"maxOutputTokens"`: the most tokens one response may generate. Anthropic always sends a limit and defaults to `32000`, so large `write_file` calls are not cut off. Other protocols send a limit only when this is set (`max_output_tokens`, `max_tokens`, or Gemini's `max_output_tokens`).
+- `"effort"`: how much reasoning the model spends, one of `low`, `medium`, `high`, `xhigh` or `max`. Anthropic sends it as `output_config.effort`, and OpenAI Responses sends it as `reasoning.effort`. Gemini maps `low` and `medium` to the same thinking levels, and `high`, `xhigh` and `max` to `high`. Unset means the provider default. Gemini needs no other change: a `baseUrl` ending in `/v1beta` is used as is.
+- `"thinking"`: `"adaptive"` (the default) requests reasoning from the provider. Set `"off"` for a model or compatible endpoint that rejects reasoning parameters, such as a non-reasoning OpenAI model or a Claude model before 4.6. Those receive no reasoning fields at all.
+- `"speed"`: `"fast"` requests Anthropic fast mode (`speed: "fast"`), which gives faster output at premium pricing on the Claude models that offer it, such as `claude-opus-5-5`. Models where fast mode is a research preview also need a beta header, which hmj does not send. Unset means standard speed, and the other protocols ignore it. Fast mode has its own rate limit, and its `429`s are retried like any other. The turn footer says `fast mode` when the API reports (in `usage.speed`) that the turn ran fast, or `fast mode in 2 of 3 steps` when only some steps did.
+
+### Reasoning
+
+Reasoning is kept in the transcript and sent back, so multi-step tool turns stay valid: Anthropic thinking blocks with their signatures, and OpenAI reasoning items with their encrypted content. Claude accepts a thinking block only while everything before it is unchanged. So pruning old tool output or summarizing old turns drops the thinking blocks after that point, while their text and tool calls stay. Nothing is pruned while a halted turn's tool round with thinking is still open. Reasoning summaries stream live. If a model declines a request under its safety classifier, hmj prints a `[the model declined this request ...]` notice that names the category when the provider gives one.
+
+## Shortcuts and commands
 
 | Shortcut | Command | Action |
 |---|---|---|
-| `Ctrl+N` | `/new` | Clear the screen and start a new conversation (preserves active model; earlier ones stay in `/resume`) |
-| `Ctrl+R` | `/resume` | Open conversation manager (switch, `Ctrl+E` rename, `Ctrl+D` delete) |
-| `Ctrl+O` | `/models` | Open interactive model selector (type-to-filter, `↑`/`↓`, `Enter`) |
-| `Ctrl+Y` | `/history` | Browse turns & copy prompt, AI response, or tool actions to clipboard |
-| `↑` / `↓` | — | Cycle prompt history (recalls previous prompts, restores draft) |
-| `Esc` / `Ctrl+C` | — | Halt running agent or tool execution immediately |
+| `Ctrl+N` | `/new` | Clear the screen and start a new conversation (keeps the active model; earlier ones stay in `/resume`) |
+| `Ctrl+R` | `/resume` | Open the conversation manager (switch, `Ctrl+E` rename, `Ctrl+D` delete) |
+| `Ctrl+O` | `/models` | Open the model selector (type to filter, `↑`/`↓`, `Enter`) |
+| `Ctrl+Y` | `/history` | Browse turns and copy a prompt, AI response or tool actions to the clipboard |
+| `↑` / `↓` | — | Cycle prompt history (recalls previous prompts, restores the draft) |
+| `Esc` / `Ctrl+C` | — | Halt the running agent or tool immediately |
 | `Ctrl+D` | — | Exit HMJ Agent (saves session state) |
-| — | `/health` | Check latency & health of all configured providers and models |
-| — | `/shortcuts` | Display shortcuts and commands cheat sheet |
+| — | `/health` | Check latency and health of all configured providers and models |
+| — | `/shortcuts` | Show the shortcuts and commands cheat sheet |
 
-* The prompt uses the standard shell editing keys: `Ctrl+A`/`Ctrl+E`, `Ctrl+U`/`Ctrl+K`, `Ctrl+W`, `Ctrl+←`/`Ctrl+→` (or `Alt+←`/`Alt+→`, `Alt+B`/`Alt+F`), `Alt+Backspace`, and `Alt+D` / `Ctrl+Delete`.
-* Typing `/` at an empty prompt opens an interactive, searchable command palette. Normal prompt inputs, including file paths (`/etc/...`), pass through directly to the model.
-* `Ctrl+Y` (or `/history`) opens the turn browser to inspect full execution transcripts (including partial runs and tool outputs) and copy prompts, responses, or full turns to the clipboard via OSC 52 ANSI escape sequences (working over SSH) or native utilities (`wl-copy`, `xclip`, `xsel`).
+- The prompt uses standard shell editing keys: `Ctrl+A`/`Ctrl+E`, `Ctrl+U`/`Ctrl+K`, `Ctrl+W`, `Ctrl+←`/`Ctrl+→` (or `Alt+←`/`Alt+→`, `Alt+B`/`Alt+F`), `Alt+Backspace`, and `Alt+D` / `Ctrl+Delete`.
+- Typing `/` at an empty prompt opens a searchable command palette. Other input, including file paths such as `/etc/...`, goes straight to the model.
+- `Ctrl+Y` (or `/history`) opens the turn browser. It shows full transcripts, including partial runs and tool output, and copies prompts, responses or whole turns to the clipboard. It uses OSC 52, which works over SSH, or `wl-copy`, `xclip` or `xsel`.
 
-## The 7 Core Tools
+## The 7 core tools
 
-1. **`read_file`**: Streams files line-by-line with targeted slices (`offset`, `limit`, `numbered`); any path on the machine. Without a `limit` a call returns at most 2000 lines and 256KB; a longer read ends with a trailer giving the `offset` to continue from. An explicit `limit` is honoured up to the 256KB cap.
-2. **`edit_file`**: Surgical substring replacement (`old_string` -> `new_string`) with unified visual diffs and word-level highlighting.
-3. **`write_file`**: Creates or replaces files with automatic directory creation (`MkdirAll`).
-4. **`list_files`**: Recursively lists files while skipping `.git` and respecting `.gitignore` rules.
-5. **`run_command`**: Runs any shell command (optional `workdir`, default cwd) with process group isolation (`Setpgid: true`), credential sanitization (`_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD` and config-named key variables), subtree cancellation on timeout/halt, and 64KB output limits. Inherits user toolchains, paths, and proxies.
-6. **`web_search`**: Searches documentation across DuckDuckGo and Wikipedia over a shared pooled connection with a 15s timeout, multi-backend fallback, and context-cancellation safety.
-7. **`fetch_url`**: Text fetcher for any URL (including `localhost` dev servers inside the VM), converting HTML to plain text capped at 120 lines via an isolated connection pool.
+1. **`read_file`**: streams files line by line, with slices by `offset`, `limit` and `numbered`, from any path on the machine. Without a `limit`, a call returns at most 2000 lines and 256KB, and a longer read ends with a trailer giving the `offset` to continue from. An explicit `limit` is honoured up to the 256KB cap.
+2. **`edit_file`**: surgical substring replacement (`old_string` → `new_string`), with unified visual diffs and word-level highlighting.
+3. **`write_file`**: creates or replaces files, creating directories as needed (`MkdirAll`).
+4. **`list_files`**: lists files recursively, skipping `.git` and respecting `.gitignore`.
+5. **`run_command`**: runs any shell command (optional `workdir`, default the current directory) in its own process group (`Setpgid: true`). Credentials such as `_API_KEY` and `_TOKEN` are stripped from the environment. Subtrees are cancelled on timeout or halt, and output is capped at 64KB. It inherits your toolchains, paths and proxies.
+6. **`web_search`**: searches DuckDuckGo and Wikipedia over a shared pooled connection, with a 15s timeout, fallback between backends, and safe context cancellation.
+7. **`fetch_url`**: fetches any URL, including `localhost` dev servers inside the VM, and converts HTML to plain text capped at 120 lines, over an isolated connection pool.
 
-> Always inspect and modify files using native tools (`read_file`, `edit_file`, `write_file`). Never shell out to `python3`, `sed`, `awk`, or bash heredocs via `run_command` to edit files.
+> Always inspect and change files with the native tools (`read_file`, `edit_file`, `write_file`). Never edit files through `run_command` with `python3`, `sed`, `awk` or bash heredocs.
 
-## Security & Isolation: Dedicated VM
+## Security: dedicated VM
 
-HMJ Agent is an unrestricted autonomous coding harness (no path sandbox, command filter, or network block) designed to be operated inside a **dedicated Virtual Machine** (e.g. any Linux distribution on KVM/Firecracker):
-1. **Shared Workspace**: Mount target project directory into the VM. Run HMJ inside the guest VM.
-2. **Host-Side Git**: Keep Git commits, pushes, and SSH/GPG keys on the host machine.
-3. **Review Before Commit**: Inspect modified files (`git diff`, `git status`) and run security scans on the host before committing.
+HMJ Agent is an unrestricted autonomous coding harness, with no path sandbox, command filter or network block. Run it inside a **dedicated virtual machine** (for example any Linux distribution on KVM or Firecracker).
+
+1. **Shared workspace:** mount the project directory into the VM, and run HMJ inside the guest.
+2. **Git on the host:** keep commits, pushes, and SSH and GPG keys on the host machine.
+3. **Review before commit:** inspect changes with `git diff` and `git status`, and run security scans on the host before committing.
 
 ## License
 

@@ -103,6 +103,38 @@ func TestConvertMessagesToAnthropic(t *testing.T) {
 	}
 }
 
+// TestAnthropicAccumulatorSpeed checks that the speed reported in message_start usage is kept,
+// that message_delta usage overrides it, and that a stream reporting none leaves it empty.
+func TestAnthropicAccumulatorSpeed(t *testing.T) {
+	speedOf := func(events ...[2]string) string {
+		t.Helper()
+		acc := newAnthropicAccumulator(time.Now())
+		for _, ev := range events {
+			if err := acc.handle(ev[0], ev[1], nil, nil); err != nil {
+				t.Fatalf("handle(%s): %v", ev[0], err)
+			}
+		}
+		_, usage := acc.result()
+		return usage.Speed
+	}
+	start := func(usage string) [2]string {
+		return [2]string{"message_start", `{"type":"message_start","message":{"usage":` + usage + `}}`}
+	}
+	delta := func(usage string) [2]string {
+		return [2]string{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":` + usage + `}`}
+	}
+
+	if got := speedOf(start(`{"input_tokens":1,"speed":"fast"}`), delta(`{"output_tokens":2}`)); got != "fast" {
+		t.Errorf("speed from message_start = %q, want fast", got)
+	}
+	if got := speedOf(start(`{"input_tokens":1,"speed":"fast"}`), delta(`{"output_tokens":2,"speed":"standard"}`)); got != "standard" {
+		t.Errorf("speed from message_delta = %q, want standard", got)
+	}
+	if got := speedOf(start(`{"input_tokens":1}`), delta(`{"output_tokens":2}`)); got != "" {
+		t.Errorf("unreported speed = %q, want empty", got)
+	}
+}
+
 func TestAnthropicAccumulator(t *testing.T) {
 	acc := newAnthropicAccumulator(time.Now())
 

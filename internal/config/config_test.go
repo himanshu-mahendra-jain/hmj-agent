@@ -597,6 +597,31 @@ func TestLoadConfigModelEffortAndOutputLimit(t *testing.T) {
 	}
 }
 
+// TestLoadConfigModelSpeed checks that speed accepts "fast", defaults to unset, and rejects any
+// other value.
+func TestLoadConfigModelSpeed(t *testing.T) {
+	load := func(t *testing.T, models string) (Config, error) {
+		t.Helper()
+		raw := `{"providers":{"p":{"baseUrl":"http://x","api":"anthropic","models":[` + models + `]}}}`
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(raw), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return LoadConfig(path)
+	}
+
+	cfg, err := load(t, `{"id":"m","speed":"fast"},{"id":"n"}`)
+	if err != nil {
+		t.Fatalf("valid models rejected: %v", err)
+	}
+	if got := cfg.Providers["p"].Models; got[0].Speed != "fast" || got[1].Speed != "" {
+		t.Errorf("models = %+v, want speed fast and unset", got)
+	}
+	if _, err := load(t, `{"id":"m","speed":"turbo"}`); err == nil || !strings.Contains(err.Error(), "speed") {
+		t.Errorf("unknown speed: err = %v, want a speed error", err)
+	}
+}
+
 // TestLoadConfigModelThinkingOption checks that thinking accepts "off" and "adaptive", that the default
 // is on, and that any other value is rejected.
 func TestLoadConfigModelThinkingOption(t *testing.T) {
