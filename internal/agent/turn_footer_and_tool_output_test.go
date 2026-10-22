@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"hmj-agent/internal/chat"
+	"hmj-agent/internal/config"
 	"hmj-agent/internal/diff"
 	"hmj-agent/internal/session"
 	"hmj-agent/internal/terminal/theme"
@@ -46,6 +47,83 @@ func TestTurnFooterReportsCacheAndTruncation(t *testing.T) {
 	for _, want := range []string{"1,000 input", "800", "cached", "50 output", "[warning: output cut off by model maximum token limit]"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestTurnFooterCountsAnthropicCacheReads checks that the footer counts the prompt-cache reads an
+// Anthropic stream reports, which arrive in other usage fields than the OpenAI protocols use.
+func TestTurnFooterCountsAnthropicCacheReads(t *testing.T) {
+	t.Chdir(t.TempDir())
+	p := newScriptedProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":900,\"cache_creation_input_tokens\":0}}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n")
+		fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	})
+	cfg := config.Config{Providers: map[string]config.Provider{
+		"mock": {BaseURL: p.srv.URL, API: config.APIAnthropic, Models: []config.Model{{ID: "mock-model"}}},
+	}}
+	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
+	conv := &session.Conversation{ID: "1", Model: mockModel}
+
+	out := captureOutput(t, func() {
+		if err := r.Run(context.Background(), conv, "hello"); err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	})
+	for _, want := range []string{"1,000 input", "900", "cached"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestTurnFooterCachedMatchesTheInput checks that a multi-step turn shows the latest step's input
+// with that step's cached tokens, not the cached tokens of every step added up, while the total
+// still adds up every step.
+func TestTurnFooterCachedMatchesTheInput(t *testing.T) {
+	s := &turnStats{turnStart: time.Now()}
+	for _, u := range []chat.TokenUsage{
+		{PromptTokens: 2400, CachedTokens: 2300, CompletionTokens: 60, TotalTokens: 2460},
+		{PromptTokens: 2700, CachedTokens: 2600, CompletionTokens: 120, TotalTokens: 2820},
+	} {
+		s.totalSteps++
+		s.add(&u)
+	}
+	out := captureOutput(t, s.printFooter)
+	for _, want := range []string{"2,700 input", "2,600", "cached", "5,280 total"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("footer lacks %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "4,900") {
+		t.Errorf("footer adds up the cached tokens of every step: %q", out)
+	}
+}
+
+// TestTurnFooterNamesFastMode checks that the footer names fast mode when every step ran in it,
+// counts the steps when only some did, and says nothing about speed when none did.
+func TestTurnFooterNamesFastMode(t *testing.T) {
+	footer := func(speeds ...string) string {
+		s := &turnStats{turnStart: time.Now()}
+		for _, speed := range speeds {
+			s.totalSteps++
+			s.add(&chat.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, Speed: speed})
+		}
+		return captureOutput(t, s.printFooter)
+	}
+
+	if out := footer("fast", "fast"); !strings.Contains(out, "fast mode") || strings.Contains(out, "fast mode in") {
+		t.Errorf("all steps fast: footer = %q, want fast mode without a step count", out)
+	}
+	if out := footer("fast", "standard", "fast"); !strings.Contains(out, "fast mode in 2 of 3 steps") {
+		t.Errorf("some steps fast: footer = %q, want fast mode in 2 of 3 steps", out)
+	}
+	for _, speeds := range [][]string{{"standard"}, {""}} {
+		if out := footer(speeds...); strings.Contains(out, "fast") {
+			t.Errorf("speeds %q: footer = %q, want no fast mode", speeds, out)
 		}
 	}
 }

@@ -210,7 +210,7 @@ func setProbeHeaders(req *http.Request, wireAPI, apiKey string) {
 	switch wireAPI {
 	case config.APIAnthropic:
 		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("anthropic-version", AnthropicVersion)
 		if apiKey != "" {
 			req.Header.Set("x-api-key", apiKey)
 		}

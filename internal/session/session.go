@@ -136,6 +136,10 @@ type Conversation struct {
 	LastPromptTokens int `json:"lastPromptTokens,omitzero"`
 	// TokenMarkIndex is the index of the first message not included in LastPromptTokens.
 	TokenMarkIndex int `json:"tokenMarkIndex,omitzero"`
+	// ThinkingKeptValid marks a conversation whose pruning and condensing have always stripped
+	// the thinking blocks after the messages they edit. A conversation saved without it by an
+	// earlier version may carry stale blocks after such edits; they are stripped once on load.
+	ThinkingKeptValid bool `json:"thinkingKeptValid,omitempty"`
 }
 
 // UserMessageCount returns the number of user messages in the transcript.
@@ -313,6 +317,12 @@ func (sm *SessionManager) finishLoadedConversations(defaultModel config.ModelRef
 		}
 		if conv.UserMessageCount() == 0 {
 			conv.SyncSystemPrompt(CurrentSystemPrompt())
+		}
+		if !conv.ThinkingKeptValid {
+			if conv.Pruned {
+				conv.stripThinkingFrom(0)
+			}
+			conv.ThinkingKeptValid = true
 		}
 	}
 }
@@ -529,6 +539,8 @@ func (sm *SessionManager) newLocked(name string) *Conversation {
 		Model:     model,
 		CreatedAt: now,
 		UpdatedAt: now,
+		// A new conversation has no edits yet, so it needs no repair on load.
+		ThinkingKeptValid: true,
 		Messages: []chat.Message{
 			{
 				Role:    "system",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -123,9 +124,11 @@ func (c *Conversation) Condense(ctx context.Context, keepRecentTurns int, summar
 // condenseOlderTurns replaces the turns before the last keepRecentTurns with a summary of
 // them, given the indices of the user messages that start each turn. The summarizer gets
 // the system prompt and the older turns; the summary takes the older turns' place as a
-// user message followed by a short assistant acknowledgement.
+// user message followed by a short assistant acknowledgement, and the kept turns lose their
+// thinking blocks (see stripThinkingFrom). Nothing is condensed while the transcript ends in a
+// tool round with thinking (see inThinkingToolRound).
 func (c *Conversation) condenseOlderTurns(ctx context.Context, userIndices []int, keepRecentTurns int, summarize Summarizer) (bool, error) {
-	if len(userIndices) <= keepRecentTurns {
+	if len(userIndices) <= keepRecentTurns || c.inThinkingToolRound() {
 		return false, nil
 	}
 	cutoff := userIndices[len(userIndices)-keepRecentTurns]
@@ -158,6 +161,8 @@ func (c *Conversation) condenseOlderTurns(ctx context.Context, userIndices []int
 	condensed = append(condensed, c.Messages[cutoff:]...)
 
 	c.Messages = condensed
+	// The kept turns' thinking was produced after the turns the summary replaces.
+	c.stripThinkingFrom(start)
 	c.Pruned = true
 	c.resetTokenMark()
 	return true, nil
@@ -238,7 +243,14 @@ func (c *Conversation) userIndices() []int {
 	return indices
 }
 
+// pruneToolMessagesBefore shortens the bulky tool outputs before cutoffIndex and strips the
+// thinking blocks that follow the first one it shortens (see stripThinkingFrom). Nothing is
+// pruned while the transcript ends in a tool round with thinking (see inThinkingToolRound).
 func (c *Conversation) pruneToolMessagesBefore(cutoffIndex int) (prunedCount int, bytesSaved int) {
+	if c.inThinkingToolRound() {
+		return 0, 0
+	}
+	firstPruned := -1
 	for i := range cutoffIndex {
 		msg := &c.Messages[i]
 		if msg.Role != "tool" {
@@ -261,13 +273,69 @@ func (c *Conversation) pruneToolMessagesBefore(cutoffIndex int) (prunedCount int
 			msg.Content = pruned
 			prunedCount++
 			bytesSaved += saved
+			if firstPruned < 0 {
+				firstPruned = i
+			}
 		}
 	}
 	if prunedCount > 0 {
+		c.stripThinkingFrom(firstPruned)
 		c.resetTokenMark()
 	}
 
 	return prunedCount, bytesSaved
+}
+
+// stripThinkingFrom removes the Anthropic thinking blocks from the assistant messages at index
+// from onward. Claude accepts a replayed thinking block only while the system prompt, tools and
+// messages before it are unchanged, and newer accounts get an error for a stale block, so the
+// blocks after an edited message must go; their text and tool calls stay. The last assistant
+// message is left alone while the transcript ends in its tool round (see inThinkingToolRound).
+func (c *Conversation) stripThinkingFrom(from int) {
+	end := len(c.Messages)
+	if c.inThinkingToolRound() {
+		end = c.lastAssistantIndex()
+	}
+	stripped := false
+	for i := max(from, 0); i < end; i++ {
+		m := &c.Messages[i]
+		if m.Role != "assistant" || len(m.Blocks) == 0 {
+			continue
+		}
+		n := len(m.Blocks)
+		m.Blocks = slices.DeleteFunc(m.Blocks, isThinkingBlock)
+		if len(m.Blocks) == 0 {
+			m.Blocks = nil
+		}
+		stripped = stripped || len(m.Blocks) < n
+	}
+	if stripped {
+		c.resetTokenMark()
+	}
+}
+
+// lastAssistantIndex returns the index of the last assistant message, or -1 when there is none.
+func (c *Conversation) lastAssistantIndex() int {
+	for i, m := range slices.Backward(c.Messages) {
+		if m.Role == "assistant" {
+			return i
+		}
+	}
+	return -1
+}
+
+// inThinkingToolRound reports whether the last assistant message called tools and carries
+// Anthropic thinking. The next request then continues that tool round, even after a halt or a new
+// prompt, since the prompt is sent in the same user message as the tool results, and Claude needs
+// the round's thinking back unchanged, with nothing before it edited.
+func (c *Conversation) inThinkingToolRound() bool {
+	i := c.lastAssistantIndex()
+	return i >= 0 && len(c.Messages[i].ToolCalls) > 0 && slices.ContainsFunc(c.Messages[i].Blocks, isThinkingBlock)
+}
+
+// isThinkingBlock reports whether b is an Anthropic thinking or redacted_thinking block.
+func isThinkingBlock(b chat.Block) bool {
+	return b.Type == "thinking" || b.Type == "redacted_thinking"
 }
 
 // compactToolOutput retains the head and tail of large tool output while omitting bulky middles.

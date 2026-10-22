@@ -211,8 +211,9 @@ const contextBudgetPercent = 75
 // beginTurn prepares conv for a new prompt: it prunes older tool output, has the model
 // summarize the older turns of a long conversation, names an untitled conversation, appends the
 // user's input and condenses further if the history is close to the model's context window. The
-// system prompt is set only when the conversation has no user message yet, so the cached prefix
-// and any reasoning blocks stay valid for the rest of the conversation.
+// system prompt is set only when the conversation has no user message yet, so a later change to it
+// never invalidates the cached prefix or the reasoning blocks. Pruning and condensing do edit the
+// history, and drop the Claude thinking blocks after their edits (see session.Compact).
 func (r *Runner) beginTurn(ctx context.Context, conv *session.Conversation, input string) {
 	if conv.UserMessageCount() == 0 {
 		conv.SyncSystemPrompt(session.CurrentSystemPrompt())
@@ -353,8 +354,13 @@ func logStep(ref config.ModelRef, usage *chat.TokenUsage, d time.Duration) {
 		attrs = append(attrs,
 			"prompt_tokens", usage.PromptTokens,
 			"completion_tokens", usage.CompletionTokens,
+			"cached_tokens", usage.EffectiveCachedTokens(),
+			"ttft", usage.TTFT,
 			"finish_reason", usage.FinishReason,
 		)
+		if usage.Speed != "" {
+			attrs = append(attrs, "speed", usage.Speed)
+		}
 	}
 	logging.L().Debug("llm step", attrs...)
 }
@@ -377,7 +383,7 @@ func execTool(ctx context.Context, tool tools.Tool, args string) (res string, er
 type turnStats struct {
 	hasUsage         bool
 	lastPromptTokens int
-	sumCachedTokens  int
+	lastCachedTokens int
 	sumCompletion    int
 	sumTotalTokens   int
 	totalSteps       int
@@ -385,6 +391,10 @@ type turnStats struct {
 	sumGenDuration   time.Duration
 	turnStart        time.Time
 	wasTruncated     bool
+	// speedSteps counts the steps whose provider reported a speed, and fastSteps those that ran
+	// in fast mode.
+	speedSteps int
+	fastSteps  int
 }
 
 // add folds one step's usage into the turn totals. A nil usage is ignored.
@@ -394,9 +404,8 @@ func (s *turnStats) add(usage *chat.TokenUsage) {
 	}
 	s.hasUsage = true
 	s.lastPromptTokens = usage.PromptTokens
-	if usage.PromptDetails != nil {
-		s.sumCachedTokens += usage.PromptDetails.EffectiveCachedTokens()
-	}
+	// Input is the latest step's prompt, so the cached count is that step's too.
+	s.lastCachedTokens = usage.EffectiveCachedTokens()
 	s.sumCompletion += usage.CompletionTokens
 	s.sumTotalTokens += usage.TotalTokens
 	if usage.TTFT > 0 {
@@ -407,6 +416,12 @@ func (s *turnStats) add(usage *chat.TokenUsage) {
 	}
 	if usage.FinishReason == "length" {
 		s.wasTruncated = true
+	}
+	if usage.Speed != "" {
+		s.speedSteps++
+		if usage.Speed == "fast" {
+			s.fastSteps++
+		}
 	}
 }
 
@@ -419,8 +434,8 @@ func (s *turnStats) printFooter() {
 
 	// Input tokens and cached
 	inputStr := fmt.Sprintf("%s input", FormatNumber(s.lastPromptTokens))
-	if s.sumCachedTokens > 0 {
-		inputStr += fmt.Sprintf(" (%s cached)", theme.Cached(FormatNumber(s.sumCachedTokens)))
+	if s.lastCachedTokens > 0 {
+		inputStr += fmt.Sprintf(" (%s cached)", theme.Cached(FormatNumber(s.lastCachedTokens)))
 	}
 
 	// Output tokens
@@ -452,6 +467,14 @@ func (s *turnStats) printFooter() {
 	footerParts := []string{inputStr, outputStr, totalStr}
 	if speedStr != "" {
 		footerParts = append(footerParts, speedStr)
+	}
+	// Fast mode is named only when it was used, so standard-speed turns keep their footer.
+	if s.fastSteps > 0 {
+		fastStr := "fast mode"
+		if s.fastSteps < s.speedSteps {
+			fastStr += fmt.Sprintf(" in %d of %d steps", s.fastSteps, s.speedSteps)
+		}
+		footerParts = append(footerParts, fastStr)
 	}
 	footerParts = append(footerParts, timeStr)
 

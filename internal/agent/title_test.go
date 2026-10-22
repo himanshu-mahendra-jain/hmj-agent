@@ -145,7 +145,8 @@ func TestTitleSettings(t *testing.T) {
 		wantThinking string
 		wantEffort   string
 	}{
-		{"anthropic turns reasoning off", config.APIAnthropic, "", titleMaxOutputTokens, "off", ""},
+		{"anthropic reasons at low effort", config.APIAnthropic, "", titleReasoningMaxOutputTokens, "", "low"},
+		{"anthropic with thinking off keeps the small cap", config.APIAnthropic, "off", titleMaxOutputTokens, "off", "high"},
 		{"responses reasons at low effort", config.APIResponses, "", titleReasoningMaxOutputTokens, "", "low"},
 		{"gemini reasons at low effort", config.APIGemini, "adaptive", titleReasoningMaxOutputTokens, "adaptive", "low"},
 		{"unknown protocol runs as responses", "", "", titleReasoningMaxOutputTokens, "", "low"},

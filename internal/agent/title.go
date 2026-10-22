@@ -91,22 +91,18 @@ func (r *Runner) generateTitle(ctx context.Context, ref config.ModelRef, prompt,
 	return cleanTitle(msg.Content), nil
 }
 
-// titleSettings edits the model's settings for the title request on protocol api. Anthropic models
-// answer without reasoning when it is turned off. Responses and Gemini reasoning models reason by
-// default even when no reasoning parameters are sent, and that reasoning would use up a small cap,
-// so they are asked for low effort and given room for it. A model configured with thinking off
-// does not reason, and Chat Completions sends no reasoning parameters, so both keep the small cap.
+// titleSettings edits the model's settings for the title request on protocol api. Reasoning
+// models of the Anthropic, Responses and Gemini protocols reason even when no reasoning parameters
+// are sent (thinking cannot be turned off on the Claude 5 models), and that reasoning would use up
+// a small cap, so they are asked for low effort and given room for it. A model configured with
+// thinking off does not reason, and Chat Completions sends no reasoning parameters, so both keep
+// the small cap.
 func titleSettings(api string, m *config.Model) {
 	m.MaxOutputTokens = titleMaxOutputTokens
 	if !m.ThinkingEnabled() {
 		return
 	}
-	switch api {
-	case config.APIAnthropic:
-		m.Thinking = "off"
-		m.Effort = ""
-	case config.APICompletions:
-	default:
+	if api != config.APICompletions {
 		m.Effort = "low"
 		m.MaxOutputTokens = titleReasoningMaxOutputTokens
 	}

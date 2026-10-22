@@ -172,7 +172,7 @@ func (c *Client) streamResponsesOnce(
 		reqPayload.Reasoning = &responsesReasoning{Effort: model.Effort, Summary: "auto"}
 	}
 
-	body, err := json.Marshal(reqPayload)
+	body, err := encodeRequestBody(reqPayload)
 	if err != nil {
 		return Message{}, nil, 0, false, err
 	}
