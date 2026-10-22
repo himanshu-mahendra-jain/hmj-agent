@@ -7,13 +7,13 @@
       "apiKey": "$ANTHROPIC_API_KEY",
       "models": [
         {
-          "id": "claude-haiku-5-5",
-          "effort": "high"
-        },
-        {
           "id": "claude-opus-5-5",
           "effort": "high",
           "speed": "fast"
+        },
+        {
+          "id": "claude-fable-5-1",
+          "effort": "high"
         }
       ]
     },

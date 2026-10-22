@@ -1546,46 +1546,60 @@ func TestAgentRunMultiTurnWriteThenReadBack(t *testing.T) {
 	}
 }
 
-// With a context window configured, history that would overflow it is condensed before
-// the request is sent.
-func TestAgentRunCondensesToContextWindow(t *testing.T) {
+// A turn is never compacted while it runs, however large the conversation. Once it has ended
+// over the limit, the conversation is compacted with the provider's compact endpoint, and the next
+// turn carries the compacted window in place of the history.
+func TestCompactionRunsAfterTheTurnOverTheLimit(t *testing.T) {
 	t.Chdir(t.TempDir())
-	var requests [][]byte
-	server := mockAgentServer(t, []string{
-		`event: response.output_text.delta
-data: {"type":"response.output_text.delta","delta":"ok"}`,
-		`event: response.completed
-data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
-	}, &requests)
+	var mu sync.Mutex
+	var paths, requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		requests = append(requests, string(body))
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/compact") {
+			fmt.Fprint(w, `{"output":[{"type":"compaction","encrypted_content":"ENCRYPTED-WINDOW"}]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":450000,\"output_tokens\":5,\"total_tokens\":450005}}}\n\n")
+	}))
 	defer server.Close()
 
 	cfg := mockAgentConfig(server.URL)
-	cfg.Providers["mock"].Models[0].ContextWindow = 20_000
 	runner := agent.NewRunner(chat.NewClient(cfg), cfg)
 	conv := &session.Conversation{ID: "c1", Model: config.ModelRef{Provider: "mock", Model: "mock-model"}}
-	for i := range 4 {
-		conv.Messages = append(conv.Messages,
-			chat.Message{Role: "user", Content: fmt.Sprintf("old request %d", i)},
-			chat.Message{Role: "assistant", Content: strings.Repeat("old reply ", 4000)}) // ~10k tokens
-	}
+	conv.Messages = append(conv.Messages,
+		chat.Message{Role: "system", Content: "SYSTEM"},
+		chat.Message{Role: "user", Content: "old request"},
+		chat.Message{Role: "assistant", Content: "old reply"})
 
 	if err := runner.Run(context.Background(), conv, "new request"); err != nil {
 		t.Fatal(err)
 	}
-	// The first request asks the model to summarize the older turns; the mock answers "ok".
-	// The second is the turn itself, with "ok" in place of those turns.
-	if len(requests) != 2 {
-		t.Fatalf("got %d requests, want a summary request and the turn", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("got %d requests during the turn, want only the turn's own", len(requests))
 	}
-	summaryReq := string(requests[0])
-	if !strings.Contains(summaryReq, "Write a summary of the conversation above") || !strings.Contains(summaryReq, "old request 0") || strings.Contains(summaryReq, "new request") {
-		t.Error("summary request should carry the older turns and the summary instruction, not the new prompt")
+
+	runner.StartCompaction(context.Background(), conv).Finish()
+	if len(requests) != 2 || paths[1] != "/responses/compact" {
+		t.Fatalf("requests to %v, want the turn and one compact request", paths)
 	}
-	body := string(requests[1])
-	if !strings.Contains(body, "new request") || !strings.Contains(body, session.SummaryPrefix) || strings.Contains(body, "old request 0") {
-		t.Error("request is missing the new prompt or the summary, or still carries the oldest turn")
+	if req := requests[1]; !strings.Contains(req, "old request") || !strings.Contains(req, "new request") {
+		t.Error("the compact request should carry the whole conversation")
 	}
-	if len(body) > 4*20_000*3/4 {
-		t.Errorf("request is %d bytes, over the 75%% budget of the 20k-token window", len(body))
+	if n := len(conv.Messages); n != 2 || conv.Messages[1].CompactionBlock() == nil {
+		t.Fatalf("after compaction the conversation is %+v, want the system prompt and the compaction", conv.Messages)
+	}
+
+	if err := runner.Run(context.Background(), conv, "next request"); err != nil {
+		t.Fatal(err)
+	}
+	body := requests[2]
+	if !strings.Contains(body, "next request") || !strings.Contains(body, "ENCRYPTED-WINDOW") || strings.Contains(body, "old request") {
+		t.Error("the next turn should carry the compacted window and the new prompt, not the compacted history")
 	}
 }

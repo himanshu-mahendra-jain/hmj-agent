@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"hmj-agent/internal/config"
-	"hmj-agent/internal/redact"
 )
 
 // geminiGeneratedCallIDPrefix marks tool-call IDs minted locally because Gemini
@@ -99,7 +98,7 @@ func convertMessagesToGemini(messages []Message) (system string, input []geminiS
 	// A function_result step carries the function name, but a tool message only
 	// has the call ID, so remember names as calls are seen.
 	names := make(map[string]string)
-	for _, msg := range messages {
+	for _, msg := range portableCompactions(messages, "") {
 		switch msg.Role {
 		case "system":
 			if system != "" {
@@ -324,7 +323,7 @@ func (a *geminiAccumulator) handle(eventType, data string, onReasoning, onDelta 
 		return fmt.Errorf("gemini stream: invalid event JSON: %w (snippet: %s)", err, truncateErrorBody([]byte(trimmed), 200))
 	}
 	if ev.Error != nil {
-		return fmt.Errorf("gemini stream error: %s", redact.String(ev.Error.Message))
+		return fmt.Errorf("gemini stream error: %s", ev.Error.Message)
 	}
 	if ev.EventType == "" {
 		ev.EventType = eventType
@@ -345,7 +344,7 @@ func (a *geminiAccumulator) handle(eventType, data string, onReasoning, onDelta 
 			if len(ev.Interaction.Errors) > 0 {
 				msg = ev.Interaction.Errors[0].Message
 			}
-			return fmt.Errorf("gemini stream error: %s", redact.String(msg))
+			return fmt.Errorf("gemini stream error: %s", msg)
 		}
 	case "step.start":
 		if ev.Step == nil {

@@ -55,6 +55,11 @@ data: {"type":"message_stop"}
 
 `
 
+// anthropicEndTurn ends an Anthropic test stream as the API does, with the stop reason and
+// message_stop. A stream without a stop reason is reported as incomplete.
+const anthropicEndTurn = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+	"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
 // anthropicTestClient returns a client whose provider is the test server at url, with retries
 // that wait only a millisecond.
 func anthropicTestClient(url string, retries int) *Client {
@@ -209,7 +214,7 @@ func TestAnthropicStrictToolsAndHeaders(t *testing.T) {
 		gotKey = r.Header.Get("x-api-key")
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fmt.Fprint(w, anthropicEndTurn)
 	}))
 	defer server.Close()
 	if _, _, err := anthropicTestClient(server.URL, 0).StreamChat(context.Background(), testRef, nil, nil, nil, nil); err != nil {
@@ -230,7 +235,7 @@ func TestAnthropicOverloadedBeforeOutputIsRetried(t *testing.T) {
 			fmt.Fprint(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}\n\n")
 			return
 		}
-		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"+anthropicEndTurn)
 	}))
 	defer server.Close()
 
@@ -341,7 +346,7 @@ func TestStreamStallBeforeOutputIsRetried(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"+anthropicEndTurn)
 	}))
 	defer server.Close()
 

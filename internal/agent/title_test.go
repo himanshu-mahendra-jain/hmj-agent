@@ -126,7 +126,7 @@ func TestTitleRequestCarriesNoGuidelinesOrTools(t *testing.T) {
 	if n := strings.Count(body, "é"); n != titlePromptRunes {
 		t.Errorf("title request carries %d runes of the prompt, want %d", n, titlePromptRunes)
 	}
-	if !strings.Contains(body, fmt.Sprintf(`"max_output_tokens":%d`, titleReasoningMaxOutputTokens)) {
+	if !strings.Contains(body, fmt.Sprintf(`"max_output_tokens":%d`, titleMaxOutputTokens)) {
 		t.Errorf("title request does not cap output tokens: %q", body)
 	}
 	if !strings.Contains(body, `"effort":"low"`) {
@@ -135,31 +135,34 @@ func TestTitleRequestCarriesNoGuidelinesOrTools(t *testing.T) {
 }
 
 // TestTitleSettings checks the output cap and reasoning settings of the title request on each
-// protocol, for a model that reasons by default and for one configured with thinking off.
+// protocol, for a model that reasons by default and for one configured with thinking off. Every
+// model gets the same cap, so only thinking and effort vary.
 func TestTitleSettings(t *testing.T) {
 	cases := []struct {
 		name         string
 		api          string
 		thinking     string
-		wantTokens   int
+		effort       string
 		wantThinking string
 		wantEffort   string
 	}{
-		{"anthropic reasons at low effort", config.APIAnthropic, "", titleReasoningMaxOutputTokens, "", "low"},
-		{"anthropic with thinking off keeps the small cap", config.APIAnthropic, "off", titleMaxOutputTokens, "off", "high"},
-		{"responses reasons at low effort", config.APIResponses, "", titleReasoningMaxOutputTokens, "", "low"},
-		{"gemini reasons at low effort", config.APIGemini, "adaptive", titleReasoningMaxOutputTokens, "adaptive", "low"},
-		{"unknown protocol runs as responses", "", "", titleReasoningMaxOutputTokens, "", "low"},
-		{"completions sends no reasoning", config.APICompletions, "", titleMaxOutputTokens, "", "high"},
-		{"thinking off stays off", config.APIResponses, "off", titleMaxOutputTokens, "off", "high"},
+		{"anthropic reasons at low effort", config.APIAnthropic, "", "high", "", "low"},
+		{"anthropic with thinking off lowers the effort it sends", config.APIAnthropic, "off", "high", "off", "low"},
+		{"anthropic with thinking off and no effort sends none", config.APIAnthropic, "off", "", "off", ""},
+		{"responses reasons at low effort", config.APIResponses, "", "high", "", "low"},
+		{"gemini reasons at low effort", config.APIGemini, "adaptive", "high", "adaptive", "low"},
+		{"unknown protocol runs as responses", "", "", "high", "", "low"},
+		{"completions sends no reasoning", config.APICompletions, "", "high", "", "high"},
+		{"thinking off stays off", config.APIResponses, "off", "high", "off", "high"},
+		{"gemini with thinking off stays off", config.APIGemini, "off", "high", "off", "high"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := config.Model{ID: "m", Thinking: tc.thinking, Effort: "high", MaxOutputTokens: 9000}
+			m := config.Model{ID: "m", Thinking: tc.thinking, Effort: tc.effort, MaxOutputTokens: 9000}
 			titleSettings(tc.api, &m)
-			if m.MaxOutputTokens != tc.wantTokens || m.Thinking != tc.wantThinking || m.Effort != tc.wantEffort {
+			if m.MaxOutputTokens != titleMaxOutputTokens || m.Thinking != tc.wantThinking || m.Effort != tc.wantEffort {
 				t.Errorf("got tokens=%d thinking=%q effort=%q, want %d %q %q",
-					m.MaxOutputTokens, m.Thinking, m.Effort, tc.wantTokens, tc.wantThinking, tc.wantEffort)
+					m.MaxOutputTokens, m.Thinking, m.Effort, titleMaxOutputTokens, tc.wantThinking, tc.wantEffort)
 			}
 		})
 	}

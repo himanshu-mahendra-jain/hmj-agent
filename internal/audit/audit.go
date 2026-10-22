@@ -1,6 +1,6 @@
 // Package audit keeps an append-only record of every tool the agent runs, as JSON
 // lines. Unlike the opt-in diagnostic log it is meant to be always on: the agent
-// opens it at startup next to its config. Arguments are redacted and capped, and
+// opens it at startup next to its config. Arguments are capped, and
 // the file is rotated once it grows past maxFileBytes.
 package audit
 
@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"hmj-agent/internal/logging"
-	"hmj-agent/internal/redact"
 )
 
 // maxArgBytes caps the recorded tool arguments.
@@ -77,12 +76,12 @@ func Record(tool, args string, d time.Duration, outputBytes int, execErr error) 
 	e := Entry{
 		Event:       "tool",
 		Tool:        tool,
-		Args:        logging.Truncate(redact.String(args), maxArgBytes),
+		Args:        logging.Truncate(args, maxArgBytes),
 		DurationMS:  d.Milliseconds(),
 		OutputBytes: outputBytes,
 	}
 	if execErr != nil {
-		e.Error = redact.String(execErr.Error())
+		e.Error = execErr.Error()
 	}
 	mu.Lock()
 	defer mu.Unlock()

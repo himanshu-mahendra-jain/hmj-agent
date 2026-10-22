@@ -16,7 +16,6 @@ import (
 	"hmj-agent/internal/config"
 	"hmj-agent/internal/diff"
 	"hmj-agent/internal/logging"
-	"hmj-agent/internal/redact"
 	"hmj-agent/internal/session"
 	"hmj-agent/internal/terminal"
 	"hmj-agent/internal/terminal/theme"
@@ -93,7 +92,7 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 	stopHaltListener := terminal.StartHaltListener(cancel)
 	defer stopHaltListener()
 
-	r.beginTurn(runCtx, conv, input)
+	r.beginTurn(conv, input)
 
 	fmt.Println()
 
@@ -203,29 +202,19 @@ func printRefusalNotice(category string) {
 	fmt.Println(theme.Caution(notice))
 }
 
-// contextBudgetPercent is how much of a model's context window the conversation may fill
-// before it is condensed, leaving room for the tool definitions, the estimate's error and
-// the reply.
-const contextBudgetPercent = 75
-
-// beginTurn prepares conv for a new prompt: it prunes older tool output, has the model
-// summarize the older turns of a long conversation, names an untitled conversation, appends the
-// user's input and condenses further if the history is close to the model's context window. The
-// system prompt is set only when the conversation has no user message yet, so a later change to it
-// never invalidates the cached prefix or the reasoning blocks. Pruning and condensing do edit the
-// history, and drop the Claude thinking blocks after their edits (see session.Compact).
-func (r *Runner) beginTurn(ctx context.Context, conv *session.Conversation, input string) {
+// beginTurn prepares conv for a new prompt: it names an untitled conversation and appends the
+// user's input. The system prompt is set only when the conversation has no user message yet, so a
+// later change to it never invalidates the cached prefix or the reasoning blocks. The history is
+// otherwise only appended to; compaction happens between turns (see StartCompaction).
+func (r *Runner) beginTurn(conv *session.Conversation, input string) {
 	if conv.UserMessageCount() == 0 {
 		conv.SyncSystemPrompt(session.CurrentSystemPrompt())
 	}
-	conv.Compact()
-	r.condense(ctx, conv)
 	conv.MaybeAutoTitle(input)
 	conv.Messages = append(conv.Messages, chat.Message{
 		Role:    "user",
 		Content: input,
 	})
-	r.fitContext(ctx, conv)
 }
 
 // streamStep makes one model request, printing reasoning and answer text as it arrives.
@@ -331,17 +320,16 @@ func (r *Runner) runTool(ctx context.Context, tc chat.ToolCall) string {
 }
 
 // logTool records one tool execution in the diagnostic log. Arguments are truncated
-// and the error attribute is present only when the tool failed. Both are redacted,
-// since errors often repeat the arguments (fetch_url's include the full URL).
+// and the error attribute is present only when the tool failed.
 func logTool(name, args string, d time.Duration, output string, execErr error) {
 	attrs := []any{
 		"name", name,
-		"args", logging.Truncate(redact.String(args), maxLoggedArgBytes),
+		"args", logging.Truncate(args, maxLoggedArgBytes),
 		"duration", d,
 		"output_bytes", len(output),
 	}
 	if execErr != nil {
-		attrs = append(attrs, "error", redact.String(execErr.Error()))
+		attrs = append(attrs, "error", execErr.Error())
 	}
 	logging.L().Info("tool", attrs...)
 }
@@ -485,6 +473,8 @@ func (s *turnStats) printFooter() {
 	}
 }
 
+// PrintConversationHistory prints the transcript of a resumed conversation. A compaction is shown
+// as a notice, followed by its summary when the provider's summary can be read.
 func PrintConversationHistory(conv *session.Conversation) {
 	toolNames := make(map[string]string)
 	for _, m := range conv.Messages {
@@ -507,6 +497,15 @@ func PrintConversationHistory(conv *session.Conversation) {
 			lastRole = "user"
 			printedAny = true
 		case "assistant":
+			if b := m.CompactionBlock(); b != nil {
+				fmt.Println(theme.Muted("[the earlier conversation was compacted]"))
+				if summary := b.ReadableSummary(); summary != "" {
+					fmt.Printf("\n%s\n", theme.Muted(theme.Sanitize(summary)))
+				}
+				lastRole = "assistant"
+				printedAny = true
+				continue
+			}
 			if len(m.ToolCalls) > 0 {
 				for _, tc := range m.ToolCalls {
 					printExpandedToolCall(tc.Function.Name, tc.Function.Arguments)

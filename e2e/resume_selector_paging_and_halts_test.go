@@ -165,10 +165,10 @@ func TestResumeSelectorInShortTerminal(t *testing.T) {
 	s.Quit()
 }
 
-// TestHaltWhileCondensing presses Esc, and in a second run Ctrl+C, while the model is
-// writing the summary of a long conversation. The halt stops the turn without an error,
-// the history stays whole, and the next turn condenses and answers normally.
-func TestHaltWhileCondensing(t *testing.T) {
+// TestHaltWhileCompacting presses Esc, and in a second run Ctrl+C, while the next prompt waits
+// for a compaction that has not ended. The halt stops the compaction without an error, the prompt
+// is sent with the whole history, and compaction runs again after that turn.
+func TestHaltWhileCompacting(t *testing.T) {
 	t.Parallel()
 	for _, key := range []struct{ name, keys, notice string }{
 		{"Esc", "\x1b", "[halted by user (Esc)]"},
@@ -178,33 +178,31 @@ func TestHaltWhileCondensing(t *testing.T) {
 			t.Parallel()
 			p := newProvider(t)
 			_, s := start(t, p)
-			for i := 1; i <= 7; i++ {
-				s.Type(fmt.Sprintf("question %d\r", i))
-				s.Expect("ok")
-				s.ExpectPrompt()
-			}
-			p.Queue(hang())
-			s.Type("question 8\r")
-			s.Expect("condensing earlier turns")
+			p.Queue(sayWithPrompt("answer 1", overLimit), sayWithPrompt("answer 2", overLimit), say("answer 3"))
+			p.QueueCompact(hang(), compactedWindow("WINDOW of the questions"))
+			s.Type("question 1\r")
+			s.Expect("answer 1")
+			s.ExpectPrompt()
+			s.Type("question 2\r")
+			s.Expect("compacting the conversation")
 			s.Type(key.keys)
 			s.Expect(key.notice)
+			s.Expect("[compaction stopped")
+			s.Expect("answer 2")
 			s.ExpectPrompt()
-			if strings.Contains(s.Screen(), "could not condense") {
-				t.Errorf("a halted summary was reported as a failure")
+			if strings.Contains(s.Screen(), "could not compact") {
+				t.Errorf("a halted compaction was reported as a failure")
 			}
-			nBefore := len(p.Requests())
-			if nBefore != 8 {
-				t.Errorf("%d requests, want 8: seven turns and the halted summary", nBefore)
+			if turn := p.LastRequest(); !strings.Contains(turn, `"question 1"`) || !strings.Contains(turn, `"question 2"`) {
+				t.Errorf("the turn after a halted compaction should carry the whole history:\n%s", turn)
 			}
 
-			p.Queue(say("SUMMARY of the questions"), say("answer 9"))
-			s.Type("question 9\r")
-			s.Expect("[condensed")
-			s.Expect("answer 9")
+			s.Type("question 3\r")
+			s.Expect("[compacted the conversation:")
+			s.Expect("answer 3")
 			s.ExpectPrompt()
-			reqs := p.Requests()
-			if turn := reqs[len(reqs)-1]; !strings.Contains(turn, "SUMMARY of the questions") || !strings.Contains(turn, `"question 9"`) {
-				t.Errorf("the turn after the halt should carry the summary and the new prompt:\n%s", turn)
+			if turn := p.LastRequest(); !strings.Contains(turn, "WINDOW of the questions") || !strings.Contains(turn, `"question 3"`) || strings.Contains(turn, `"question 1"`) {
+				t.Errorf("the turn after the compaction should carry the window and the new prompt:\n%s", turn)
 			}
 			s.Quit()
 		})

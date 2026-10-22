@@ -53,7 +53,7 @@ func TestLoadConfigRejectsBadFiles(t *testing.T) {
 func TestLoadConfigAcceptsValidFieldValues(t *testing.T) {
 	body := `{"providers":{"p":{"baseUrl":"https://x","api":"  ANTHROPIC ","models":[
 		{"id":"a","effort":"max","thinking":"adaptive","maxOutputTokens":0},
-		{"id":"b","effort":"","thinking":"","contextWindow":200000},
+		{"id":"b","effort":"","thinking":""},
 		{"id":"c","thinking":"off","maxOutputTokens":4096}
 	]}}}`
 	cfg, err := LoadConfig(writeCovConfig(t, body))
@@ -69,9 +69,6 @@ func TestLoadConfigAcceptsValidFieldValues(t *testing.T) {
 	}
 	if !models[0].ThinkingEnabled() || !models[1].ThinkingEnabled() {
 		t.Error(`thinking "" and "adaptive" should keep reasoning enabled`)
-	}
-	if models[1].ContextWindow != 200000 {
-		t.Errorf("ContextWindow = %d, want 200000", models[1].ContextWindow)
 	}
 }
 
@@ -174,28 +171,6 @@ func TestFindModelRejectsOutOfRangeIndexAndAmbiguousDisplayName(t *testing.T) {
 		t.Errorf("FindModel on empty config: error = %v, want ErrNoModels", err)
 	}
 }
-
-func TestSecretMaskingEncodings(t *testing.T) {
-	var empty Secret
-	if empty.String() != "" || empty.GoString() != `""` {
-		t.Errorf("empty secret should render empty, got %q / %q", empty.String(), empty.GoString())
-	}
-	s := Secret("sk-live")
-	if got := s.String(); got != "[redacted]" {
-		t.Errorf("String = %q", got)
-	}
-	if got := s.GoString(); got != `"[redacted]"` {
-		t.Errorf("GoString = %q", got)
-	}
-	if got := s.LogValue().String(); got != "[redacted]" {
-		t.Errorf("LogValue = %q", got)
-	}
-	b, err := s.MarshalJSON()
-	if err != nil || string(b) != `"[redacted]"` {
-		t.Errorf("MarshalJSON = %s, %v", b, err)
-	}
-}
-
 func TestResolveAPIKeyVariants(t *testing.T) {
 	t.Setenv("HMJ_COV_KEY", "secret-value")
 	if got := ResolveAPIKey("$HMJ_COV_KEY"); got != "secret-value" {

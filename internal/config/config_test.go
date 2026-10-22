@@ -1,12 +1,8 @@
 package config
 
 import (
-	"bytes"
-	"encoding/json/v2"
 	"errors"
-	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -470,51 +466,17 @@ func TestLookupSentinelErrors(t *testing.T) {
 	}
 }
 
-// An API key never appears when a provider is printed, logged or encoded, but
-// ResolveAPIKey still returns it.
-func TestSecretIsMasked(t *testing.T) {
-	const key = "sk-live-0123456789abcdef"
-	p := Provider{BaseURL: "https://api.example.com", APIKey: key}
-
-	var logged bytes.Buffer
-	slog.New(slog.NewJSONHandler(&logged, nil)).Info("provider", "p", p, "key", p.APIKey)
-	textLogged := new(bytes.Buffer)
-	slog.New(slog.NewTextHandler(textLogged, nil)).Info("provider", "key", p.APIKey)
-	encoded, err := json.Marshal(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	outputs := map[string]string{
-		"%v": fmt.Sprintf("%v", p), "%+v": fmt.Sprintf("%+v", p), "%#v": fmt.Sprintf("%#v", p),
-		"%s": fmt.Sprintf("%s", p.APIKey), "%q": fmt.Sprintf("%q", p.APIKey),
-		"json": string(encoded), "slog json": logged.String(), "slog text": textLogged.String(),
-	}
-	for name, out := range outputs {
-		if strings.Contains(out, key) {
-			t.Errorf("%s leaked the key: %s", name, out)
-		}
-	}
-	if got := ResolveAPIKey(p.APIKey); got != key {
-		t.Errorf("ResolveAPIKey = %q, want the real key", got)
-	}
-
-	var decoded Provider
-	if err := json.Unmarshal([]byte(`{"baseUrl":"x","apiKey":"`+key+`"}`), &decoded); err != nil || string(decoded.APIKey) != key {
-		t.Errorf("decoding the config lost the key: %q, %v", decoded.APIKey, err)
-	}
-}
-
 // "$NAME" is an environment lookup, never shell expansion: command substitution and
 // nested variables are not evaluated.
 func TestResolveAPIKeyDoesNotUseShell(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
 	t.Setenv("HMJ_TEST_KEY", "real-key")
-	tests := map[Secret]string{
-		"$HMJ_TEST_KEY":                   "real-key",
-		"$(touch " + Secret(marker) + ")": "",
-		"$`touch " + Secret(marker) + "`": "",
-		"${HMJ_TEST_KEY}":                 "",
-		"literal-key":                     "literal-key",
+	tests := map[string]string{
+		"$HMJ_TEST_KEY":           "real-key",
+		"$(touch " + marker + ")": "",
+		"$`touch " + marker + "`": "",
+		"${HMJ_TEST_KEY}":         "",
+		"literal-key":             "literal-key",
 	}
 	for in, want := range tests {
 		if got := ResolveAPIKey(in); got != want {
@@ -532,7 +494,7 @@ func TestSecurityWarnings(t *testing.T) {
 	tests := []struct {
 		name    string
 		baseURL string
-		key     Secret
+		key     string
 		mode    os.FileMode
 		want    []string // substrings, one per expected warning
 	}{

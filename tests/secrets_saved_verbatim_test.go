@@ -13,7 +13,6 @@ import (
 	"hmj-agent/internal/agent"
 	"hmj-agent/internal/chat"
 	"hmj-agent/internal/config"
-	"hmj-agent/internal/redact"
 	"hmj-agent/internal/session"
 	"hmj-agent/internal/tools"
 )
@@ -31,12 +30,11 @@ func (secretEchoTool) Execute(_ context.Context, args string) (string, error) {
 	return "echoed " + args, nil
 }
 
-// TestRegisteredSecretsMaskedOnlyOnDisk checks the redaction contract end to end through a Runner: a
-// registered secret that flows through a tool result stays verbatim in the in-memory conversation
-// (so the model and the tools see the real value), and is masked only in the saved session file.
-func TestRegisteredSecretsMaskedOnlyOnDisk(t *testing.T) {
+// TestSecretsSavedVerbatim checks end to end through a Runner that a secret flowing through a tool
+// result is kept as it is, in memory and in the saved session file: hmj runs on a dedicated VM and
+// masks nothing, so a resumed conversation is the one the model produced.
+func TestSecretsSavedVerbatim(t *testing.T) {
 	const secret = "sk-live-TOPSECRET-0123456789"
-	redact.Register(secret)
 	t.Chdir(t.TempDir())
 
 	toolCall := fmt.Sprintf(`event: response.output_item.added
@@ -101,10 +99,7 @@ data: {"type":"response.completed","response":{"status":"completed"}}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), secret) {
-		t.Fatalf("saved session still contains the secret")
-	}
-	if !strings.Contains(string(raw), redact.Placeholder) {
-		t.Errorf("saved session has no placeholder; the secret was not masked")
+	if !strings.Contains(string(raw), secret) || strings.Contains(string(raw), "[REDACTED]") {
+		t.Errorf("saved session does not keep the secret verbatim")
 	}
 }

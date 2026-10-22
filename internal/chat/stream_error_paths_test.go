@@ -240,8 +240,8 @@ func TestEndpointURLSuffixes(t *testing.T) {
 		{config.APIResponses, "/v1/responses", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"},
 		{config.APICompletions, "/v1/completions", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"},
 		{config.APICompletions, "/v1/chat/completions", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"},
-		{config.APIAnthropic, "/v1/messages", "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"},
-		{config.APIAnthropic, "/proxy/messages", "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"},
+		{config.APIAnthropic, "/v1/messages", "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" + anthropicEndTurn},
+		{config.APIAnthropic, "/proxy/messages", "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" + anthropicEndTurn},
 	}
 	for _, tc := range tests {
 		t.Run(tc.api+tc.path, func(t *testing.T) {

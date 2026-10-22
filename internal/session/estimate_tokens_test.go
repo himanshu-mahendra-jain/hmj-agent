@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"testing"
 
 	"hmj-agent/internal/chat"
@@ -21,13 +20,8 @@ func TestEstimateTokensUsesReportedPromptSize(t *testing.T) {
 		t.Errorf("with baseline: estimate = %d, want 1000 + 8/4", got)
 	}
 
-	// Condensing rewrites the transcript, so the reported size no longer applies.
-	for range 8 {
-		conv.Messages = append(conv.Messages,
-			chat.Message{Role: "user", Content: "q"}, chat.Message{Role: "assistant", Content: "a"})
-	}
-	summarize := func(context.Context, []chat.Message) (string, error) { return "summary", nil }
-	if _, err := conv.FitContext(context.Background(), 1, summarize); err != nil {
+	// Compaction rewrites the transcript, so the reported size no longer applies.
+	if err := conv.ApplyCompaction(summaryMessage("summary"), len(conv.Messages)); err != nil {
 		t.Fatal(err)
 	}
 	if conv.LastPromptTokens != 0 || conv.TokenMarkIndex != 0 {

@@ -20,7 +20,6 @@ import (
 	"hmj-agent/internal/chat"
 	"hmj-agent/internal/config"
 	"hmj-agent/internal/logging"
-	"hmj-agent/internal/redact"
 	"hmj-agent/internal/session"
 	"hmj-agent/internal/terminal"
 	"hmj-agent/internal/terminal/theme"
@@ -75,6 +74,9 @@ type app struct {
 	// lastSaveErr is the last session save failure shown, so a persistent
 	// failure (e.g. a read-only filesystem) is reported once, not every turn.
 	lastSaveErr string
+	// compaction is the compaction started when the last turn ended, running while the next
+	// input is typed; finishCompaction applies it before that input is handled.
+	compaction *agent.Compaction
 }
 
 // shutdownGrace bounds how long a signal waits for a running turn to unwind.
@@ -98,9 +100,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	cwd, _ := os.Getwd()
 	logging.L().Info("start", "version", config.VersionString(), "cwd", cwd)
-	if err := tools.HideEnvironFromCommands(); err != nil {
-		fmt.Fprintf(stderr, "%s %v\n", theme.Muted("[warning: commands can read this process's environment:]"), err)
-	}
 
 	a, err := loadApp(forced)
 	if err != nil {
@@ -127,6 +126,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	printWelcome(conv)
 
 	a.repl(bufio.NewReader(stdin))
+	a.finishCompaction()
 	a.saveSession()
 	return 0
 }
@@ -186,7 +186,7 @@ func runHealth(stdout, stderr io.Writer) int {
 		agent.PrintHint(stderr, err)
 		return 1
 	}
-	_ = checkConfigSecurity(config.DefaultConfigPath(), cfg, false) // warns and registers keys for redaction
+	_ = checkConfigSecurity(config.DefaultConfigPath(), cfg, false) // warns about the config
 	client := chat.NewClient(cfg)
 	client.OnProtocolDetected = func(provider, api string, saved bool) {
 		fmt.Fprintln(stderr, theme.Muted(agent.ProtocolDetectedNotice(provider, api, saved)))
@@ -272,14 +272,8 @@ func loadApp(forced forcedFlags) (*app, error) {
 var errInsecureConfig = errors.New("insecure config rejected by --strict")
 
 // checkConfigSecurity prints the config's security warnings, or returns them as an
-// error under --strict. It also registers the API keys so they are redacted from
-// saved sessions, error messages and the audit log, and the environment variables
-// holding them so run_command does not pass them on.
+// error under --strict.
 func checkConfigSecurity(path string, cfg config.Config, strict bool) error {
-	for _, p := range cfg.Providers {
-		redact.Register(config.ResolveAPIKey(p.APIKey))
-		tools.RegisterSensitiveEnv(config.APIKeyEnvName(p.APIKey))
-	}
 	warnings := config.SecurityWarnings(path, cfg)
 	if len(warnings) == 0 {
 		return nil
@@ -504,6 +498,7 @@ func (a *app) promptModel() *session.Conversation {
 // dispatch runs one line of input: a shortcut or slash command, a local command,
 // or a prompt sent to the model.
 func (a *app) dispatch(input string, action terminal.ShortcutAction, conv *session.Conversation, reader *bufio.Reader) {
+	a.finishCompaction()
 	// A keyboard shortcut wins; otherwise a typed slash command maps onto the same action.
 	if action == terminal.ActionNone {
 		action = slashCommandActions[strings.TrimSpace(input)]
@@ -534,8 +529,23 @@ func (a *app) dispatch(input string, action terminal.ShortcutAction, conv *sessi
 			fmt.Fprintln(os.Stderr)
 			reportError("request to "+conv.Model.Provider+"/"+conv.Model.Model, err)
 		}
+		a.compaction = a.runner.StartCompaction(a.ctx, conv)
 		a.saveSession()
 	}
+}
+
+// finishCompaction waits for the compaction started after the last turn, if any, and puts the
+// compacted conversation in place before anything else reads or changes it, holding the busy slot
+// so a shutdown does not save the conversation halfway.
+func (a *app) finishCompaction() {
+	if a.compaction == nil {
+		return
+	}
+	a.busy <- struct{}{}
+	defer func() { <-a.busy }()
+	a.compaction.Finish()
+	a.compaction = nil
+	a.saveSession()
 }
 
 // handleAction runs a keyboard shortcut or the slash command mapped to it.

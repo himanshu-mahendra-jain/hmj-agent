@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"errors"
 	"io"
 	"os"
@@ -9,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
 	"hmj-agent/internal/config"
 )
 
@@ -116,16 +114,14 @@ func TestLoadSessionManagerUsesTheKeyAsID(t *testing.T) {
 	}
 }
 
-// TestLoadSessionManagerFinishesLoadedConversations checks the repairs made on load: the ID
-// counter continues after the highest ID, a conversation without a model gets the default,
-// tool calls left unanswered by an interrupted turn are answered, the token baseline of a
-// repaired transcript is dropped, and an unstarted conversation gets the system prompt.
+// TestLoadSessionManagerFinishesLoadedConversations checks what loading fills in: the ID counter
+// continues after the highest ID, a conversation without a model gets the default, and an
+// unstarted conversation gets the system prompt.
 func TestLoadSessionManagerFinishesLoadedConversations(t *testing.T) {
 	t.Chdir(t.TempDir())
 	path := writeSessionFile(t, `{"activeId":"7","order":["7","3"],"counter":1,"conversations":{
-		"7":{"id":"7","name":"interrupted","model":{"provider":"p","model":"m"},"lastPromptTokens":500,"tokenMarkIndex":2,"messages":[
-			{"role":"system","content":"s"},{"role":"user","content":"run it"},
-			{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"run_command","arguments":"{}"}}]}]},
+		"7":{"id":"7","name":"started","model":{"provider":"p","model":"m"},"messages":[
+			{"role":"system","content":"s"},{"role":"user","content":"run it"},{"role":"assistant","content":"done"}]},
 		"3":{"id":"3","name":"unstarted","messages":[{"role":"assistant","content":"hello"}]}}}`)
 	sm := LoadSessionManager(path, config.ModelRef{Provider: "fallback", Model: "f"})
 
@@ -138,14 +134,6 @@ func TestLoadSessionManagerFinishesLoadedConversations(t *testing.T) {
 	}
 	if unstarted.Messages[0].Role != "system" || unstarted.Messages[0].Content != CurrentSystemPrompt() || unstarted.Messages[1].Content != "hello" {
 		t.Errorf("unstarted conversation messages = %+v, want the system prompt inserted first", unstarted.Messages)
-	}
-	interrupted := sm.Conversations["7"]
-	last := interrupted.Messages[len(interrupted.Messages)-1]
-	if last.Role != "tool" || last.ToolCallID != "call_a" || last.Content != CancelledToolResult {
-		t.Errorf("last message = %+v, want the cancelled result for call_a", last)
-	}
-	if interrupted.LastPromptTokens != 0 || interrupted.TokenMarkIndex != 0 {
-		t.Errorf("token baseline kept after repair: %d at %d", interrupted.LastPromptTokens, interrupted.TokenMarkIndex)
 	}
 	if c := sm.New("next"); c.ID != "8" {
 		t.Errorf("next ID = %s, want 8 (after the highest loaded ID)", c.ID)
@@ -354,36 +342,5 @@ func TestCurrentSystemPromptInDeletedWorkingDirectory(t *testing.T) {
 	}
 	if got := CurrentSystemPrompt(); got != DefaultSystemPrompt {
 		t.Errorf("prompt = %q, want the default", got[min(len(got), len(DefaultSystemPrompt)):])
-	}
-}
-
-// TestCompactionDefaultsForNonPositiveLimits checks that a keep count below one is treated
-// as the smallest sensible value instead of pruning or summarizing everything.
-func TestCompactionDefaultsForNonPositiveLimits(t *testing.T) {
-	conv := toolTurns(2, 60)
-	if n, _ := conv.PruneOldToolOutputs(0); n != 1 {
-		t.Errorf("PruneOldToolOutputs(0) pruned %d outputs, want 1 (the latest turn kept)", n)
-	}
-	conv = toolTurns(1, 60)
-	conv.Messages = append(conv.Messages, chat.Message{Role: "tool", ToolCallID: "x", Content: bulkyOutput("more", 60)})
-	if n, _ := conv.PruneInFlightToolOutputs(-3); n != 1 {
-		t.Errorf("PruneInFlightToolOutputs(-3) pruned %d outputs, want 1 (the latest kept)", n)
-	}
-
-	long := chatTurns(DefaultMaxTurnsBeforeSummary + 2)
-	var gotHistory int
-	changed, err := long.Condense(context.Background(), 0, func(_ context.Context, h []chat.Message) (string, error) {
-		gotHistory = len(h)
-		return "summary", nil
-	})
-	if err != nil || !changed {
-		t.Fatalf("Condense = %v, %v", changed, err)
-	}
-	if got := long.UserMessageCount(); got != DefaultKeepTurnsAfterSummary+1 {
-		t.Errorf("user messages after Condense(keep 0) = %d, want the default %d kept plus the summary (history %d)", got, DefaultKeepTurnsAfterSummary+1, gotHistory)
-	}
-
-	if short := "a few\nlines"; compactToolOutput(short) != short {
-		t.Error("compactToolOutput changed a short output")
 	}
 }

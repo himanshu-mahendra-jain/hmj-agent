@@ -241,7 +241,7 @@ func BenchmarkListFiles_IgnoredPruning(b *testing.B) {
 	}
 }
 
-// --- Session Compaction & Serialization Benchmarks ---
+// --- Session Serialization Benchmarks ---
 
 func buildBenchmarkConversation(turnCount int, toolOutputLines int) *session.Conversation {
 	conv := &session.Conversation{
@@ -267,42 +267,9 @@ func buildBenchmarkConversation(turnCount int, toolOutputLines int) *session.Con
 	return conv
 }
 
-// BenchmarkSessionCompact_10Turns tests compacting a 10-turn conversation with bulky tool outputs.
-func BenchmarkSessionCompact_10Turns(b *testing.B) {
-	b.ReportAllocs()
-
-	for b.Loop() {
-		b.StopTimer()
-		conv := buildBenchmarkConversation(10, 50)
-		b.StartTimer()
-
-		pruned, saved := conv.Compact()
-		if pruned == 0 || saved == 0 {
-			b.Fatalf("expected compaction to prune messages")
-		}
-	}
-}
-
-// BenchmarkSessionCompact_50Turns tests Tier 1 + Tier 2 compaction on a deep 50-turn conversation.
-func BenchmarkSessionCompact_50Turns(b *testing.B) {
-	b.ReportAllocs()
-
-	for b.Loop() {
-		b.StopTimer()
-		conv := buildBenchmarkConversation(50, 40)
-		b.StartTimer()
-
-		pruned, saved := conv.Compact()
-		if pruned == 0 || saved == 0 {
-			b.Fatalf("expected compaction to prune messages")
-		}
-	}
-}
-
 // BenchmarkSession_JSONSerialization measures session encoding overhead on long sessions.
 func BenchmarkSession_JSONSerialization(b *testing.B) {
 	conv := buildBenchmarkConversation(30, 30)
-	conv.Compact()
 
 	b.ResetTimer()
 	b.ReportAllocs()

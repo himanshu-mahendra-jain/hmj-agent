@@ -3,6 +3,7 @@ package chat
 import (
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -26,6 +27,20 @@ type InputItem struct {
 	ID               string    `json:"id,omitempty"`
 	EncryptedContent string    `json:"encrypted_content,omitempty"`
 	Summary          *[]string `json:"summary,omitzero"`
+	// Raw, when set, is an item of a compacted window, sent exactly as the compact endpoint
+	// returned it in place of the fields above.
+	Raw jsontext.Value `json:"-"`
+}
+
+// inputItemFields is InputItem without its MarshalJSONTo method.
+type inputItemFields InputItem
+
+// MarshalJSONTo writes Raw as it is, or else the item's fields.
+func (it InputItem) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if it.Raw != nil {
+		return enc.WriteValue(it.Raw)
+	}
+	return json.MarshalEncode(enc, inputItemFields(it), enc.Options())
 }
 
 // ResponsesRequest is the body of a POST /responses request.
@@ -96,8 +111,13 @@ func dropReasoningItems(items []InputItem) []InputItem {
 }
 
 func convertMessagesToInputItems(messages []Message) []InputItem {
+	messages = portableCompactions(messages, BlockResponsesCompaction)
 	items := make([]InputItem, 0, len(messages))
 	for _, msg := range messages {
+		if b := msg.CompactionBlock(); b != nil {
+			items = append(items, compactedWindowItems(b.Data)...)
+			continue
+		}
 		switch msg.Role {
 		case "tool":
 			items = append(items, InputItem{
@@ -144,6 +164,21 @@ func convertMessagesToInputItems(messages []Message) []InputItem {
 	return items
 }
 
+// compactedWindowItems returns the items of a compacted window, the JSON array the compact
+// endpoint returned, to be sent as they are. A window that does not decode, which only a damaged
+// session file could hold, gives no items.
+func compactedWindowItems(window string) []InputItem {
+	var raw []jsontext.Value
+	if err := json.Unmarshal([]byte(window), &raw); err != nil {
+		return nil
+	}
+	items := make([]InputItem, len(raw))
+	for i, v := range raw {
+		items[i] = InputItem{Raw: v}
+	}
+	return items
+}
+
 func (c *Client) streamResponsesOnce(
 	ctx context.Context,
 	provider config.Provider,
@@ -177,15 +212,7 @@ func (c *Client) streamResponsesOnce(
 		return Message{}, nil, 0, false, err
 	}
 
-	baseURL := strings.TrimRight(provider.BaseURL, "/")
-	var url string
-	if strings.HasSuffix(baseURL, "/responses") {
-		url = baseURL
-	} else {
-		url = baseURL + "/responses"
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responsesURL(provider.BaseURL), bytes.NewReader(body))
 	if err != nil {
 		return Message{}, nil, 0, false, err
 	}

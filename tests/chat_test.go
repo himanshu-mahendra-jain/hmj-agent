@@ -870,7 +870,7 @@ func TestStreamChatAnthropicMessages(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		events := []string{
-			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_anthropic_1\",\"model\":\"claude-3-7-sonnet\",\"usage\":{\"input_tokens\":50,\"output_tokens\":1,\"cache_read_input_tokens\":10}}}",
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_anthropic_1\",\"model\":\"claude-sonnet-5-5\",\"usage\":{\"input_tokens\":50,\"output_tokens\":1,\"cache_read_input_tokens\":10}}}",
 			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}",
 			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Analyzing code...\"}}",
 			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
@@ -901,7 +901,7 @@ func TestStreamChatAnthropicMessages(t *testing.T) {
 				BaseURL: server.URL,
 				APIKey:  "sk-ant-testkey",
 				API:     "anthropic",
-				Models:  []config.Model{{ID: "claude-3-7-sonnet"}},
+				Models:  []config.Model{{ID: "claude-sonnet-5-5"}},
 			},
 		},
 	}
@@ -912,7 +912,7 @@ func TestStreamChatAnthropicMessages(t *testing.T) {
 
 	msg, usage, err := client.StreamChat(
 		context.Background(),
-		config.ModelRef{Provider: "anthropic-provider", Model: "claude-3-7-sonnet"},
+		config.ModelRef{Provider: "anthropic-provider", Model: "claude-sonnet-5-5"},
 		[]chat.Message{
 			{Role: "system", Content: "You are a coding assistant."},
 			{Role: "user", Content: "Show me main.go"},
@@ -1022,9 +1022,8 @@ func TestIsRetryableNetError(t *testing.T) {
 	}
 }
 
-// A provider error that echoes the API key is shown with the key masked, and a long
-// body is cut to a readable length.
-func TestStreamChatErrorBodyIsRedactedAndShort(t *testing.T) {
+// A provider error is shown as the provider wrote it, and a long body is cut to a readable length.
+func TestStreamChatErrorBodyIsShort(t *testing.T) {
 	const key = "sk-proj-0123456789abcdefghijklmnop"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"Incorrect API key provided: `+key+`"}}`+strings.Repeat(" padding", 1000), http.StatusUnauthorized)
@@ -1038,8 +1037,8 @@ func TestStreamChatErrorBodyIsRedactedAndShort(t *testing.T) {
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("err = %v, want a StatusError", err)
 	}
-	if strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "Incorrect API key provided: [REDACTED]") {
-		t.Errorf("key not masked: %v", err)
+	if !strings.Contains(err.Error(), "Incorrect API key provided: "+key) {
+		t.Errorf("error does not show the provider's message: %v", err)
 	}
 	if n := len([]rune(statusErr.Body)); n > 1100 {
 		t.Errorf("shown body is %d runes, want about 1000", n)

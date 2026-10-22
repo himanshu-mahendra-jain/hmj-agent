@@ -52,13 +52,16 @@ func firstPromptIn(body string) string {
 // next queued reply; an empty queue answers "ok".
 type reply func(w http.ResponseWriter, r *http.Request)
 
-// provider is a mock OpenAI Responses API endpoint (POST /responses) with scripted replies.
+// provider is a mock OpenAI Responses API endpoint (POST /responses) with scripted replies. Its
+// compact endpoint (POST /responses/compact) takes the compact queue's replies, and returns a
+// compacted window when that is empty.
 type provider struct {
 	t   *testing.T
 	srv *httptest.Server
 
 	mu       sync.Mutex
 	queue    []reply
+	compact  []reply
 	requests []string // request bodies, in arrival order
 }
 
@@ -79,7 +82,12 @@ func newProvider(t *testing.T) *provider {
 		p.mu.Lock()
 		p.requests = append(p.requests, string(body))
 		next := say("ok")
-		if len(p.queue) > 0 {
+		if strings.HasSuffix(r.URL.Path, "/compact") {
+			next = compactedWindow("ENC")
+			if len(p.compact) > 0 {
+				next, p.compact = p.compact[0], p.compact[1:]
+			}
+		} else if len(p.queue) > 0 {
 			next, p.queue = p.queue[0], p.queue[1:]
 		}
 		p.mu.Unlock()
@@ -97,6 +105,13 @@ func (p *provider) Queue(replies ...reply) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.queue = append(p.queue, replies...)
+}
+
+// QueueCompact appends replies for the next compact requests.
+func (p *provider) QueueCompact(replies ...reply) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.compact = append(p.compact, replies...)
 }
 
 // Requests returns the request bodies received so far.
@@ -147,21 +162,32 @@ func startStream(w http.ResponseWriter) {
 }
 
 func completed(w http.ResponseWriter) {
+	completedWith(w, 100)
+}
+
+// completedWith ends a response whose prompt was inputTokens long.
+func completedWith(w http.ResponseWriter, inputTokens int) {
 	sse(w, "response.completed", map[string]any{
 		"type": "response.completed",
 		"response": map[string]any{
 			"status": "completed",
-			"usage":  map[string]int{"input_tokens": 100, "output_tokens": 10, "total_tokens": 110},
+			"usage":  map[string]int{"input_tokens": inputTokens, "output_tokens": 10, "total_tokens": inputTokens + 10},
 		},
 	})
 }
 
 // say replies with text.
 func say(text string) reply {
+	return sayWithPrompt(text, 100)
+}
+
+// sayWithPrompt replies with text and reports a prompt of inputTokens, so a test can make a
+// conversation as large as it needs.
+func sayWithPrompt(text string, inputTokens int) reply {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startStream(w)
 		sse(w, "response.output_text.delta", map[string]any{"type": "response.output_text.delta", "delta": text})
-		completed(w)
+		completedWith(w, inputTokens)
 	}
 }
 
@@ -240,6 +266,15 @@ func hang() reply {
 			f.Flush()
 		}
 		<-r.Context().Done()
+	}
+}
+
+// compactedWindow answers a compact request with a window holding one compaction item whose
+// encrypted content is encrypted.
+func compactedWindow(encrypted string) reply {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"output":[{"type":"compaction","encrypted_content":%q}]}`, encrypted)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -11,7 +12,7 @@ import (
 	"time"
 
 	"hmj-agent/internal/config"
-	"hmj-agent/internal/redact"
+	"hmj-agent/internal/logging"
 )
 
 // DefaultAnthropicMaxTokens is the output limit applied to Anthropic requests when the model does
@@ -24,6 +25,10 @@ const DefaultAnthropicMaxTokens = 32000
 // no citations in user messages) concern nothing hmj sends.
 const AnthropicVersion = "2026-10-21"
 
+// anthropicCompactionBeta is the beta that on-demand compaction needs, on the compaction request
+// and on every request that carries its block.
+const anthropicCompactionBeta = "compact-2026-09-04"
+
 type anthropicRequest struct {
 	Model        string                 `json:"model"`
 	System       []anthropicContent     `json:"system,omitempty"`
@@ -35,6 +40,13 @@ type anthropicRequest struct {
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
 	// Speed "fast" requests fast mode; omitted means standard speed.
 	Speed string `json:"speed,omitempty"`
+	// Compaction asks for a summary of the messages instead of a reply.
+	Compaction *anthropicCompaction `json:"compaction,omitempty"`
+}
+
+// anthropicCompaction is the on-demand compaction parameter.
+type anthropicCompaction struct {
+	Type string `json:"type"`
 }
 
 // anthropicThinking enables adaptive thinking. Display "summarized" streams the reasoning so it
@@ -61,7 +73,8 @@ type anthropicContent struct {
 	Name      string `json:"name,omitempty"`
 	Input     any    `json:"input,omitzero"`
 	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
+	// Content is a tool result's output, or a compaction block's summary.
+	Content string `json:"content,omitempty"`
 	// IsError marks a tool_result whose tool failed.
 	IsError bool `json:"is_error,omitzero"`
 	// Thinking is a pointer so an empty thinking text is still sent.
@@ -94,7 +107,8 @@ func isThinkingBlock(blockType string) bool {
 
 // convertMessagesToAnthropic converts the transcript into the Anthropic system prompt and message
 // list. Assistant thinking blocks are replayed first, verbatim and in their original order, because
-// the API requires them to precede the text and tool_use blocks of the same turn.
+// the API requires them to precede the text and tool_use blocks of the same turn. A compaction
+// block is replayed as the API returned it.
 func convertMessagesToAnthropic(messages []Message) (system string, msgs []anthropicMessage) {
 	appendBlock := func(role string, block anthropicContent) {
 		if len(msgs) > 0 && msgs[len(msgs)-1].Role == role {
@@ -104,7 +118,7 @@ func convertMessagesToAnthropic(messages []Message) (system string, msgs []anthr
 		msgs = append(msgs, anthropicMessage{Role: role, Content: []anthropicContent{block}})
 	}
 
-	for _, msg := range messages {
+	for _, msg := range portableCompactions(messages, BlockAnthropicCompaction) {
 		switch msg.Role {
 		case "system":
 			if system != "" {
@@ -128,6 +142,8 @@ func convertMessagesToAnthropic(messages []Message) (system string, msgs []anthr
 					appendBlock("assistant", anthropicContent{Type: "thinking", Thinking: &text, Signature: b.Signature})
 				case "redacted_thinking":
 					appendBlock("assistant", anthropicContent{Type: "redacted_thinking", Data: b.Data})
+				case BlockAnthropicCompaction:
+					appendBlock("assistant", anthropicContent{Type: BlockAnthropicCompaction, Content: b.Text, Signature: b.Signature})
 				}
 			}
 			if msg.Content != "" {
@@ -195,6 +211,9 @@ type anthropicEvent struct {
 		Name      string `json:"name"`
 		Signature string `json:"signature"`
 		Data      string `json:"data"`
+		// Content is a compaction block's summary. Other block types carry content of other
+		// shapes, so it is decoded loosely.
+		Content any `json:"content"`
 	} `json:"content_block"`
 	Delta struct {
 		Type        string                `json:"type"`
@@ -220,6 +239,9 @@ type anthropicUsage struct {
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	// Speed is the speed the request ran at, "fast" or "standard", when the API reports it.
 	Speed string `json:"speed"`
+	// Iterations reports each sampling call of the request. A compaction request reports its
+	// summarization call here, with zero top-level counts.
+	Iterations []anthropicUsage `json:"iterations"`
 }
 
 // anthropicStopDetails explains a stop_reason such as "refusal": the safety category and a short
@@ -251,9 +273,11 @@ type anthropicAccumulator struct {
 	// locates the block that a delta with a given content index belongs to.
 	reasoning        []*anthropicBlockAcc
 	reasoningByIndex map[int]*anthropicBlockAcc
-	finishReason     string
-	refusal          *anthropicStopDetails
-	usage            *TokenUsage
+	// compaction is the block a compaction request returned, whole in its content_block_start.
+	compaction   *Block
+	finishReason string
+	refusal      *anthropicStopDetails
+	usage        *TokenUsage
 }
 
 func newAnthropicAccumulator(startTime time.Time) *anthropicAccumulator {
@@ -361,6 +385,9 @@ func (a *anthropicAccumulator) handleContentBlockStart(ev *anthropicEvent) {
 		}}
 		a.reasoning = append(a.reasoning, acc)
 		a.reasoningByIndex[ev.Index] = acc
+	case BlockAnthropicCompaction:
+		summary, _ := ev.ContentBlock.Content.(string)
+		a.compaction = &Block{Type: BlockAnthropicCompaction, Text: summary, Signature: ev.ContentBlock.Signature}
 	}
 }
 
@@ -424,23 +451,40 @@ func (a *anthropicAccumulator) handleMessageDelta(ev *anthropicEvent) {
 		a.usage.OutputTokens = ev.Usage.OutputTokens
 		a.usage.CompletionTokens = ev.Usage.OutputTokens
 	}
+	// A compaction request reports its tokens only per iteration.
+	if a.usage.PromptTokens == 0 && a.usage.CompletionTokens == 0 {
+		for _, it := range ev.Usage.Iterations {
+			a.usage.PromptTokens += it.InputTokens + it.CacheReadInputTokens + it.CacheCreationInputTokens
+			a.usage.InputTokens += it.InputTokens
+			a.usage.CachedTokens += it.CacheReadInputTokens
+			a.usage.OutputTokens += it.OutputTokens
+			a.usage.CompletionTokens += it.OutputTokens
+		}
+	}
 	if ev.Usage.Speed != "" {
 		a.usage.Speed = ev.Usage.Speed
 	}
 }
 
-// handleErrorEvent turns an Anthropic "error" event into a Go error. Overload and transient API
-// errors are wrapped as retryableStreamError so the retry loop can try again before output starts.
+// handleErrorEvent turns an Anthropic "error" event into a Go error. The error types whose HTTP
+// statuses are retried (rate limit, server error, timeout, overload) are wrapped as
+// retryableStreamError so the retry loop can try again before output starts.
 func (a *anthropicAccumulator) handleErrorEvent(ev *anthropicEvent, trimmed string) error {
 	if ev.Error.Type == "" && ev.Error.Message == "" {
 		return fmt.Errorf("anthropic stream error: %s", truncateErrorBody([]byte(trimmed), maxShownErrorRunes))
 	}
-	err := fmt.Errorf("anthropic error (%s): %s", ev.Error.Type, redact.String(ev.Error.Message))
-	if ev.Error.Type == "overloaded_error" || ev.Error.Type == "api_error" {
+	err := fmt.Errorf("anthropic error (%s): %s", ev.Error.Type, ev.Error.Message)
+	switch ev.Error.Type {
+	case "rate_limit_error", "api_error", "timeout_error", "overloaded_error":
 		return &retryableStreamError{err: err}
 	}
 	return err
 }
+
+// errIncompleteStream reports an Anthropic stream that ended without a stop reason: the
+// connection closed cleanly before the response was complete, so its last content block, such as
+// a tool call's arguments, may be cut short.
+var errIncompleteStream = errors.New("anthropic stream ended before the response was complete")
 
 func (a *anthropicAccumulator) result() (Message, *TokenUsage) {
 	totalDuration := time.Since(a.startTime)
@@ -486,6 +530,9 @@ func (a *anthropicAccumulator) result() (Message, *TokenUsage) {
 	for _, acc := range a.reasoning {
 		acc.block.Text = acc.text.String()
 		blocks = append(blocks, acc.block)
+	}
+	if a.compaction != nil {
+		blocks = append(blocks, *a.compaction)
 	}
 
 	return Message{
@@ -573,7 +620,18 @@ func (c *Client) streamAnthropicOnce(
 	onReasoning func(string),
 	onDelta func(string),
 ) (Message, *TokenUsage, time.Duration, bool, error) {
-	body, err := marshalAnthropicRequest(model, messages, tools)
+	return c.sendAnthropic(ctx, provider, anthropicRequestFor(model, messages, tools), onReasoning, onDelta)
+}
+
+// sendAnthropic sends one streaming Messages API request with payload as its body.
+func (c *Client) sendAnthropic(
+	ctx context.Context,
+	provider config.Provider,
+	payload anthropicRequest,
+	onReasoning func(string),
+	onDelta func(string),
+) (Message, *TokenUsage, time.Duration, bool, error) {
+	body, err := encodeRequestBody(payload)
 	if err != nil {
 		return Message{}, nil, 0, false, err
 	}
@@ -586,6 +644,9 @@ func (c *Client) streamAnthropicOnce(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("anthropic-version", AnthropicVersion)
+	if payload.Compaction != nil || carriesCompaction(payload.Messages) {
+		req.Header.Set("anthropic-beta", anthropicCompactionBeta)
+	}
 	if key := config.ResolveAPIKey(provider.APIKey); key != "" {
 		req.Header.Set("x-api-key", key)
 	}
@@ -598,7 +659,74 @@ func (c *Client) streamAnthropicOnce(
 	if err != nil {
 		return Message{}, nil, retryAfter, retryable, err
 	}
+	// Every complete response carries a stop reason in message_delta. Without one the reply is
+	// partial and must not be used; it is retried when no output has been shown yet.
+	if acc.finishReason == "" {
+		return Message{}, nil, 0, acc.firstToken.IsZero(), errIncompleteStream
+	}
 
 	msg, usage := acc.result()
 	return msg, usage, 0, false, nil
+}
+
+// carriesCompaction reports whether msgs hold a compaction block.
+func carriesCompaction(msgs []anthropicMessage) bool {
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == BlockAnthropicCompaction {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// compactAnthropic asks the Messages API to compact messages on demand (beta
+// compact-2026-09-04): the request is the conversation's own request, with the same system
+// prompt, tools, thinking, effort and speed, so it reads the conversation's prompt cache, plus
+// the compaction parameter. The reply is one signed compaction block.
+func (c *Client) compactAnthropic(ctx context.Context, provider config.Provider, model config.Model, messages []Message, tools []ToolDefinition) (Message, error) {
+	payload := anthropicRequestFor(model, messages, tools)
+	payload.Compaction = &anthropicCompaction{Type: "summarize"}
+	discard := func(string) {}
+	var reply Message
+	var usage *TokenUsage
+	err := c.withRetries(ctx, func() (time.Duration, bool, error) {
+		var retryAfter time.Duration
+		var retryable bool
+		var err error
+		reply, usage, retryAfter, retryable, err = c.sendAnthropic(ctx, provider, payload, discard, discard)
+		return retryAfter, retryable, err
+	})
+	if err != nil {
+		return Message{}, err
+	}
+	logging.L().Info("compaction request", "stop_reason", usage.FinishReason, "prompt_tokens", usage.PromptTokens,
+		"cached_tokens", usage.CachedTokens, "output_tokens", usage.CompletionTokens)
+	for _, b := range reply.Blocks {
+		if b.Type == BlockAnthropicCompaction && usage.FinishReason == "compaction" {
+			return Message{Role: "assistant", Blocks: []Block{b}}, nil
+		}
+	}
+	return Message{}, noSummaryError(usage)
+}
+
+// noSummaryError explains a compaction request that returned no summary, from the stop reason of
+// its summarization call.
+func noSummaryError(usage *TokenUsage) error {
+	switch usage.FinishReason {
+	case "length":
+		return errors.New("no summary came back: it was cut off at the output limit")
+	case "tool_calls":
+		return errSummaryToolCall
+	case "refusal":
+		if usage.RefusalCategory != "" {
+			return fmt.Errorf("no summary came back: the model declined (safety classifier: %s)", usage.RefusalCategory)
+		}
+		return errors.New("no summary came back: the model declined")
+	case "stop", "":
+		return ErrEmptySummary
+	default:
+		return fmt.Errorf("no summary came back (stop reason %s)", usage.FinishReason)
+	}
 }
