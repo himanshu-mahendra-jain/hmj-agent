@@ -11,6 +11,13 @@ var hiddenElements = map[string]bool{
 	"script": true, "style": true, "noscript": true, "svg": true, "template": true,
 }
 
+// hiddenWithPageChrome adds the elements around a page's content, its site navigation, footer
+// and sidebars, for a page that does not mark its content with <main> or <article>.
+var hiddenWithPageChrome = map[string]bool{
+	"script": true, "style": true, "noscript": true, "svg": true, "template": true,
+	"nav": true, "footer": true, "aside": true,
+}
+
 // blockSeparators are written for the start and end tags of block elements so their
 // text does not run into the neighbouring text. A single "\n" is only written when the
 // output does not already end a line.
@@ -26,16 +33,107 @@ var blockSeparators = map[string]string{
 // htmlConverter accumulates the text of an HTML document as Markdown-like output.
 type htmlConverter struct {
 	out      []byte
+	hidden   map[string]bool // elements whose content is skipped
 	linkHref string
 	linkAt   int // offset in out where the open link's text starts, or -1
 }
 
-// htmlToText converts an HTML document to readable text in a single pass: hidden
-// elements and comments are dropped, headings, list items, rules and preformatted
-// blocks get Markdown markers, links become [text](href), and whitespace-only lines
-// collapse to at most one blank line.
+// htmlToText converts an HTML document to readable text: only its <main> element, or its
+// <article> elements when it has no <main>, after the page's title. A page with neither
+// is converted whole, without its navigation, footer and sidebars.
 func htmlToText(rawHTML string) string {
-	c := htmlConverter{out: make([]byte, 0, len(rawHTML)/2), linkAt: -1}
+	if content, title := mainContent(rawHTML); content != "" {
+		if text := convertHTML(content, hiddenElements); text != "" {
+			if title = collapseBlankLines(html.UnescapeString(title)); title != "" {
+				return title + "\n" + text
+			}
+			return text
+		}
+	}
+	return convertHTML(rawHTML, hiddenWithPageChrome)
+}
+
+// mainContent returns the markup of the document's <main> element, or the span from its first
+// <article> to the end of its last, and the raw text of its <title>. content is "" when the
+// document has neither element.
+func mainContent(rawHTML string) (content, title string) {
+	mainStart, mainEnd, articleStart, articleEnd, titleStart := -1, -1, -1, -1, -1
+	scanTags(rawHTML, func(name string, closing bool, start, end int) {
+		switch {
+		case name == "main" && !closing && mainStart < 0:
+			mainStart = start
+		case name == "main" && closing && mainStart >= 0 && mainEnd < 0:
+			mainEnd = end
+		case name == "article" && !closing && articleStart < 0:
+			articleStart = start
+		case name == "article" && closing && articleStart >= 0:
+			articleEnd = end
+		case name == "title" && !closing && titleStart < 0:
+			titleStart = end
+		case name == "title" && closing && titleStart >= 0 && title == "":
+			title = rawHTML[titleStart:start]
+		}
+	})
+	switch {
+	case mainStart >= 0:
+		if mainEnd < 0 {
+			mainEnd = len(rawHTML)
+		}
+		return rawHTML[mainStart:mainEnd], title
+	case articleStart >= 0:
+		if articleEnd < 0 {
+			articleEnd = len(rawHTML)
+		}
+		return rawHTML[articleStart:articleEnd], title
+	}
+	return "", title
+}
+
+// scanTags calls visit for each start and end tag of the document, with its lower-case name
+// and the offsets of its '<' and just past its '>'. Comments and the content of hidden
+// elements are skipped, as the converter skips them, so markup quoted in a script never counts.
+func scanTags(s string, visit func(name string, closing bool, start, end int)) {
+	for pos := 0; pos < len(s); {
+		lt := strings.IndexByte(s[pos:], '<')
+		if lt < 0 {
+			return
+		}
+		pos += lt
+		rest := s[pos:]
+		if strings.HasPrefix(rest, "<!--") {
+			end := strings.Index(rest[4:], "-->")
+			if end < 0 {
+				return
+			}
+			pos += 4 + end + 3
+			continue
+		}
+		if len(rest) < 2 || !(isASCIILetter(rest[1]) || rest[1] == '/') {
+			pos++
+			continue
+		}
+		end := tagEnd(rest)
+		if end < 0 {
+			return
+		}
+		tag := rest[1:end]
+		closing := strings.HasPrefix(tag, "/")
+		name, attrs := splitTagName(strings.TrimPrefix(tag, "/"))
+		name = strings.ToLower(name)
+		visit(name, closing, pos, pos+end+1)
+		pos += end + 1
+		if !closing && hiddenElements[name] && !strings.HasSuffix(attrs, "/") {
+			pos = len(s) - len(skipPastEndTag(s[pos:], name))
+		}
+	}
+}
+
+// convertHTML converts HTML to readable text in a single pass: elements in hidden and
+// comments are dropped, headings, list items, rules and preformatted blocks get Markdown
+// markers, links become [text](href), and whitespace-only lines collapse to at most one
+// blank line.
+func convertHTML(rawHTML string, hidden map[string]bool) string {
+	c := htmlConverter{out: make([]byte, 0, len(rawHTML)/2), hidden: hidden, linkAt: -1}
 	for s := rawHTML; s != ""; {
 		lt := strings.IndexByte(s, '<')
 		if lt < 0 {
@@ -73,7 +171,7 @@ func (c *htmlConverter) markup(s string) string {
 	closing := strings.HasPrefix(tag, "/")
 	name, attrs := splitTagName(strings.TrimPrefix(tag, "/"))
 	name = strings.ToLower(name)
-	if !closing && hiddenElements[name] && !strings.HasSuffix(attrs, "/") {
+	if !closing && c.hidden[name] && !strings.HasSuffix(attrs, "/") {
 		return skipPastEndTag(rest, name)
 	}
 	c.tag(name, attrs, closing)

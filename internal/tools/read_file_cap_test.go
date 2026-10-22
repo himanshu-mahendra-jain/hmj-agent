@@ -112,10 +112,10 @@ func TestReadFileCutsOverlongLineAndSaysSo(t *testing.T) {
 	}
 }
 
-// TestCapReadFileBytesKeepsRuneBoundary checks the cut never splits a multi-byte rune.
-func TestCapReadFileBytesKeepsRuneBoundary(t *testing.T) {
+// TestCapLinesToBytesKeepsRuneBoundary checks the cut never splits a multi-byte rune.
+func TestCapLinesToBytesKeepsRuneBoundary(t *testing.T) {
 	long := strings.Repeat("a", MaxReadFileBytes-1) + "é" // the é straddles the cap
-	kept, cut := capReadFileBytes([]string{long})
+	kept, cut := capLinesToBytes([]string{long}, MaxReadFileBytes)
 	if !cut || len(kept) != 1 {
 		t.Fatalf("kept %d lines, cut %v; want one cut line", len(kept), cut)
 	}

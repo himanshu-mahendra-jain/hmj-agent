@@ -55,7 +55,7 @@ func TestFetchURLResponses(t *testing.T) {
 		{name: "status error names the status once", args: `{"url":"` + notFound.URL + `/x"}`, want: "[HTTP 404 Not Found for " + notFound.URL + "/x]", exactOut: true},
 		{name: "error body cut short", args: `{"url":"` + brokenError.URL + `"}`, want: "[HTTP 500 Internal Server Error for " + brokenError.URL + "; response drain failed: unexpected EOF]", exactOut: true},
 		{name: "success body cut short", args: `{"url":"` + brokenOK.URL + `"}`, wantErr: "failed to read response"},
-		{name: "max_lines capped at 1000", args: `{"url":"` + manyLines.URL + `","max_lines":5000}`, want: "[truncated to 1000 lines of 1501 total; use max_lines to view more]", wantNot: "line 1000\n"},
+		{name: "max_lines capped at 1000", args: `{"url":"` + manyLines.URL + `","max_lines":5000}`, want: "[truncated to 1000 lines of 1500, 13 KB in all] ...", wantNot: "line 1000\n"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

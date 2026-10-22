@@ -60,14 +60,15 @@ func writeBackup(absPath string, old []byte) error {
 	if err := os.WriteFile(filepath.Join(backupDir, name), old, 0o600); err != nil {
 		return err
 	}
-	pruneBackups()
+	pruneDir(backupDir, maxBackups, maxBackupBytes)
 	return nil
 }
 
-// pruneBackups removes the oldest backups beyond maxBackups files or maxBackupBytes in
-// total. Failures are ignored: an oversized directory only costs disk space.
-func pruneBackups() {
-	entries, err := os.ReadDir(backupDir)
+// pruneDir removes the oldest files of dir beyond maxFiles files or maxBytes in total. File
+// names must start with a timestamp, so they sort by age. Failures are ignored: an
+// oversized directory only costs disk space.
+func pruneDir(dir string, maxFiles int, maxBytes int64) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -79,8 +80,8 @@ func pruneBackups() {
 			continue
 		}
 		total += info.Size()
-		if i >= maxBackups || total > maxBackupBytes {
-			os.Remove(filepath.Join(backupDir, e.Name()))
+		if i >= maxFiles || total > maxBytes {
+			os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
 }

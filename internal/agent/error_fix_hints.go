@@ -23,6 +23,10 @@ func RemediationHint(err error) string {
 	}
 	if statusErr, ok := errors.AsType[*chat.StatusError](err); ok {
 		switch statusErr.Code {
+		case http.StatusBadRequest:
+			if chat.IsContextOverflow(err) {
+				return "the conversation is over the model's context limit; start a new conversation with /new"
+			}
 		case http.StatusUnauthorized:
 			return "check the provider apiKey / its environment variable"
 		case http.StatusPaymentRequired:
