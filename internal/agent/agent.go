@@ -117,6 +117,19 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 
 		stepStart := time.Now()
 		assistantMsg, usage, streamedAny, err := r.streamStep(runCtx, conv, spinner)
+		// A request over the model's context limit is sent again without the largest result
+		// of this step's tool calls, until it fits or no large result is left. A result that
+		// is removed stays removed even if the request still fails, so the saved conversation
+		// can be sent again.
+		for chat.IsContextOverflow(err) && runCtx.Err() == nil {
+			name, size, ok := removeLargestStepResult(conv)
+			if !ok {
+				break
+			}
+			fmt.Println(theme.Caution(removedResultNotice(name, size)))
+			assistantMsg, usage, streamedAny, err = r.streamStep(runCtx, conv, spinner)
+			logging.L().Warn("tool result removed", "name", name, "bytes", size, "retry_ok", err == nil)
+		}
 		stats.add(usage)
 
 		if err != nil {
@@ -315,6 +328,8 @@ func (r *Runner) runTool(ctx context.Context, tc chat.ToolCall) string {
 	}
 	logTool(toolName, toolArgs, toolDuration, output, execErr)
 	audit.Record(toolName, toolArgs, toolDuration, len(output), execErr)
+	// The terminal shows what the model gets; the logs above keep the full size.
+	output = capToolResult(toolName, output)
 	printExpandedToolResult(toolName, output, toolDuration)
 	return output
 }

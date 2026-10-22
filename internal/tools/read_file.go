@@ -190,7 +190,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return fmt.Sprintf("file has %d lines (requested offset %d)", totalLines, offset), nil
 	}
 
-	kept, lineCut := capReadFileBytes(selected)
+	kept, lineCut := capLinesToBytes(selected, MaxReadFileBytes)
 	out := formatReadFileOutput(in, offset, kept, totalLines)
 
 	lastShown := offset + len(kept) - 1
@@ -207,15 +207,15 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	return out, nil
 }
 
-// capReadFileBytes returns the longest prefix of lines whose text fits in MaxReadFileBytes. It always
+// capLinesToBytes returns the longest prefix of lines whose text fits in limit bytes. It always
 // keeps one line: when that line alone is over the cap it is cut at a rune boundary and lineCut is set.
-func capReadFileBytes(lines []string) (kept []string, lineCut bool) {
+func capLinesToBytes(lines []string, limit int) (kept []string, lineCut bool) {
 	size := 0
 	for i, line := range lines {
-		if size+len(line)+1 > MaxReadFileBytes {
+		if size+len(line)+1 > limit {
 			if i == 0 {
-				// A first line of exactly MaxReadFileBytes fits once its newline is not counted.
-				cut := truncateToBytes(line, MaxReadFileBytes)
+				// A first line of exactly limit bytes fits once its newline is not counted.
+				cut := TruncateToBytes(line, limit)
 				return []string{cut}, len(cut) < len(line)
 			}
 			return lines[:i], false
@@ -225,8 +225,8 @@ func capReadFileBytes(lines []string) (kept []string, lineCut bool) {
 	return lines, false
 }
 
-// truncateToBytes returns the longest prefix of s that is at most n bytes and ends on a rune boundary.
-func truncateToBytes(s string, n int) string {
+// TruncateToBytes returns the longest prefix of s that is at most n bytes and ends on a rune boundary.
+func TruncateToBytes(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}

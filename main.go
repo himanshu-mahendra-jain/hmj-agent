@@ -131,12 +131,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// openAuditTrail starts the audit log of tool runs and the backups of edited files, both
-// kept next to the config file. HMJ_AUDIT_LOG moves the audit log, or turns it off when
+// openAuditTrail starts the audit log of tool runs, the backups of edited files and the saved
+// text of truncated fetch_url pages, all kept next to the config file. HMJ_AUDIT_LOG moves the audit log, or turns it off when
 // set to "off". It returns a func that closes the log.
 func openAuditTrail(stderr io.Writer) func() {
 	dataDir := filepath.Dir(config.DefaultConfigPath())
 	tools.SetBackupDir(filepath.Join(dataDir, "backups"))
+	tools.SetFetchDir(filepath.Join(dataDir, "fetch"))
 
 	auditPath := cmp.Or(os.Getenv("HMJ_AUDIT_LOG"), filepath.Join(dataDir, "audit.log"))
 	if auditPath == "off" {

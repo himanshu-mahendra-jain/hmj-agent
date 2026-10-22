@@ -26,6 +26,8 @@ const (
 	MaxCommandOutputBytes = 64 * 1024
 	// MaxFetchBodyBytes is the largest response body fetch_url will read.
 	MaxFetchBodyBytes = 4 * 1024 * 1024
+	// MaxFetchOutputBytes caps the text fetch_url returns, whatever its line count.
+	MaxFetchOutputBytes = 64 * 1024
 )
 
 // User-Agent headers. Web pages get a generic browser string that does not single out
