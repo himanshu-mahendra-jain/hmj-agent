@@ -27,9 +27,6 @@ const (
 // accessibleReportInterval is how often accessibility mode appends a progress line.
 var accessibleReportInterval = 15 * time.Second
 
-// SetAccessibleReportInterval changes the accessibility progress-line cadence. Exposed for tests.
-func SetAccessibleReportInterval(d time.Duration) { accessibleReportInterval = d }
-
 // Spinner is a lightweight single-line activity indicator drawn at the start
 // of a turn, before the first streamed token arrives. It gives immediate
 // feedback that the submitted prompt was accepted and the model is working —
@@ -50,8 +47,12 @@ func SetAccessibleReportInterval(d time.Duration) { accessibleReportInterval = d
 // to subsequent writers.
 type Spinner struct {
 	label string
-	out   io.Writer
-	isTTY bool
+	// status and detail follow the label on the drawn line: the turn's progress, and the
+	// latest output of a running tool.
+	status string
+	detail string
+	out    io.Writer
+	isTTY  bool
 
 	mu     sync.Mutex
 	active bool
@@ -100,6 +101,28 @@ func (s *Spinner) SetLabel(label string) {
 	}
 	s.mu.Lock()
 	s.label = label
+	s.mu.Unlock()
+}
+
+// SetStatus sets the progress shown after the label and elapsed time, such as the turn's step
+// and token counts. Empty shows none.
+func (s *Spinner) SetStatus(status string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.status = status
+	s.mu.Unlock()
+}
+
+// SetDetail sets the text shown last on the line, such as a running command's latest output
+// line. Empty shows none. The line is cut to the terminal width, so detail must be one line.
+func (s *Spinner) SetDetail(detail string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.detail = detail
 	s.mu.Unlock()
 }
 
@@ -235,10 +258,49 @@ func (s *Spinner) draw() {
 	fmt.Fprintf(s.out, "\r\x1b[K%s", line)
 }
 
-// renderLocked builds the line content; caller must hold s.mu.
+// spinnerWidth is the number of columns the drawn line may use. A line that wraps cannot be
+// erased with a carriage return, so the line is cut to fit. Tests replace it.
+var spinnerWidth = rowWidth
+
+// renderLocked builds the line content, cut to spinnerWidth: when the status and detail do not
+// both fit, the status is left out. Caller must hold s.mu.
 func (s *Spinner) renderLocked() string {
 	frame := spinnerFrames[s.frame]
-	return fmt.Sprintf("%s %s %s", theme.Faint(frame), theme.Muted(s.label), theme.Faint(fmt.Sprintf("(%ds)", s.elapsedSeconds())))
+	elapsed := "(" + FormatElapsed(s.elapsedSeconds()) + ")"
+	var tail strings.Builder
+	for _, part := range []string{s.status, s.detail} {
+		if part != "" {
+			tail.WriteString(" · " + part)
+		}
+	}
+	room := spinnerWidth() - VisibleWidth(frame) - 1
+	head := VisibleWidth(s.label) + 1 + VisibleWidth(elapsed)
+	if s.detail != "" && head+VisibleWidth(tail.String()) > room {
+		// The detail is what changes while a tool runs, so the status gives way to it.
+		tail.Reset()
+		tail.WriteString(" · " + s.detail)
+	}
+	if head > room {
+		return fmt.Sprintf("%s %s", theme.Faint(frame), theme.Muted(clipEnd(s.label+" "+elapsed, room)))
+	}
+	line := fmt.Sprintf("%s %s %s", theme.Faint(frame), theme.Muted(s.label), theme.Faint(elapsed))
+	if rest := clipEnd(tail.String(), room-head); rest != "" {
+		line += theme.Faint(rest)
+	}
+	return line
+}
+
+// FormatElapsed writes whole seconds as 42s, 2m05s or 1h02m, for the status line and for
+// durations of a minute and more elsewhere.
+func FormatElapsed(sec int) string {
+	switch {
+	case sec < 60:
+		return fmt.Sprintf("%ds", sec)
+	case sec < 3600:
+		return fmt.Sprintf("%dm%02ds", sec/60, sec%60)
+	default:
+		return fmt.Sprintf("%dh%02dm", sec/3600, sec%3600/60)
+	}
 }
 
 // elapsedSeconds is the whole seconds since Start; caller must hold s.mu.

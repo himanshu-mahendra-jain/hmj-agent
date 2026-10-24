@@ -77,6 +77,9 @@ type app struct {
 	// compaction is the compaction started when the last turn ended, running while the next
 	// input is typed; finishCompaction applies it before that input is handled.
 	compaction *agent.Compaction
+	// afterTurn is set when a turn has run since the last prompt, which is then set off from it
+	// by a divider.
+	afterTurn bool
 }
 
 // shutdownGrace bounds how long a signal waits for a running turn to unwind.
@@ -98,7 +101,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	} else {
 		defer closeLog()
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "unknown: " + err.Error()
+	}
 	logging.L().Info("start", "version", config.VersionString(), "cwd", cwd)
 
 	a, err := loadApp(forced)
@@ -113,7 +119,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// Stamp the config as loaded before reading it so a concurrent edit
 	// between stat and read still triggers a reload on the next prompt.
 	a.stampConfigLoaded()
-	a.sm = session.LoadSessionManager(config.DefaultSessionPath(), a.modelRef)
+	a.sm = session.LoadSessionManager(config.DefaultSessionDir(), a.modelRef)
 
 	terminal.SaveOrigTermios()
 	defer terminal.Restore()
@@ -128,16 +134,22 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	a.repl(bufio.NewReader(stdin))
 	a.finishCompaction()
 	a.saveSession()
+	if err := a.sm.Close(); err != nil {
+		logging.L().Warn("conversation lock not released", "error", err.Error())
+	}
+	tools.Jobs.StopAll()
 	return 0
 }
 
 // openAuditTrail starts the audit log of tool runs, the backups of edited files and the saved
-// text of truncated fetch_url pages, all kept next to the config file. HMJ_AUDIT_LOG moves the audit log, or turns it off when
+// text of truncated fetch_url pages and run_command outputs, all kept next to the config file. HMJ_AUDIT_LOG moves the audit log, or turns it off when
 // set to "off". It returns a func that closes the log.
 func openAuditTrail(stderr io.Writer) func() {
 	dataDir := filepath.Dir(config.DefaultConfigPath())
 	tools.SetBackupDir(filepath.Join(dataDir, "backups"))
 	tools.SetFetchDir(filepath.Join(dataDir, "fetch"))
+	tools.SetCommandLogDir(filepath.Join(dataDir, "commands"))
+	chat.SetImageDir(filepath.Join(dataDir, "images"))
 
 	auditPath := cmp.Or(os.Getenv("HMJ_AUDIT_LOG"), filepath.Join(dataDir, "audit.log"))
 	if auditPath == "off" {
@@ -148,23 +160,27 @@ func openAuditTrail(stderr io.Writer) func() {
 		fmt.Fprintf(stderr, "%s %v\n", theme.Muted("[warning: audit log disabled:]"), err)
 		return func() {}
 	}
-	return func() { closeAudit() }
+	return func() {
+		if err := closeAudit(); err != nil {
+			fmt.Fprintf(stderr, "%s %v\n", theme.Muted("[warning: audit log not closed cleanly:]"), err)
+		}
+	}
 }
 
-// applyFlags processes the command-line flags in order. Informational flags and
-// --health finish the run: exit reports that, and code is the process status.
+// applyFlags processes the command-line flags in order. Informational flags, --health and
+// an unknown argument finish the run: exit reports that, and code is the process status.
 func applyFlags(args []string, stdout, stderr io.Writer) (forced forcedFlags, code int, exit bool) {
 	for _, arg := range args {
 		switch arg {
-		case "--help", "-h", "help", "/shortcuts", "shortcuts", "--shortcuts":
+		case "--help", "-h":
 			agent.PrintBanner()
 			return forced, 0, true
-		case "--version", "-v", "version":
+		case "--version", "-v":
 			fmt.Fprintf(stdout, "HMJ Agent %s\n", config.VersionString())
 			return forced, 0, true
-		case "--health", "health":
+		case "--health":
 			return forced, runHealth(stdout, stderr), true
-		case "--accessible", "--accessibility", "-a":
+		case "--accessible", "-a":
 			theme.SetAccessibility(true)
 			forced.accessible = true
 		case "--high-contrast":
@@ -174,6 +190,9 @@ func applyFlags(args []string, stdout, stderr io.Writer) (forced forcedFlags, co
 			theme.SetEnabled(false)
 		case "--strict":
 			forced.strict = true
+		default:
+			fmt.Fprintf(stderr, "unknown argument %q; run hmj --help for the shortcuts, or see the README for flags\n", arg)
+			return forced, 2, true
 		}
 	}
 	return forced, 0, false
@@ -187,7 +206,7 @@ func runHealth(stdout, stderr io.Writer) int {
 		agent.PrintHint(stderr, err)
 		return 1
 	}
-	_ = checkConfigSecurity(config.DefaultConfigPath(), cfg, false) // warns about the config
+	warnConfigSecurity(config.DefaultConfigPath(), cfg)
 	client := chat.NewClient(cfg)
 	client.OnProtocolDetected = func(provider, api string, saved bool) {
 		fmt.Fprintln(stderr, theme.Muted(agent.ProtocolDetectedNotice(provider, api, saved)))
@@ -275,17 +294,21 @@ var errInsecureConfig = errors.New("insecure config rejected by --strict")
 // checkConfigSecurity prints the config's security warnings, or returns them as an
 // error under --strict.
 func checkConfigSecurity(path string, cfg config.Config, strict bool) error {
-	warnings := config.SecurityWarnings(path, cfg)
-	if len(warnings) == 0 {
+	if !strict {
+		warnConfigSecurity(path, cfg)
 		return nil
 	}
-	if strict {
+	if warnings := config.SecurityWarnings(path, cfg); len(warnings) > 0 {
 		return fmt.Errorf("%w:\n  - %s", errInsecureConfig, strings.Join(warnings, "\n  - "))
 	}
-	for _, w := range warnings {
+	return nil
+}
+
+// warnConfigSecurity prints each security warning about the config on stderr.
+func warnConfigSecurity(path string, cfg config.Config) {
+	for _, w := range config.SecurityWarnings(path, cfg) {
 		fmt.Fprintf(os.Stderr, "%s %s\n", theme.Caution("security warning:"), w)
 	}
-	return nil
 }
 
 // applyDisplayConfig sets the accessibility and high-contrast modes from the config file.
@@ -338,11 +361,12 @@ func (a *app) reloadConfig() {
 	logging.L().Info("config reloaded", "path", a.configPath)
 }
 
-// saveSession writes the session file, reporting a failure without stopping the run.
+// saveSession writes the active conversation and the session state, reporting a failure
+// without stopping the run.
 func (a *app) saveSession() {
-	path := config.DefaultSessionPath()
+	dir := config.DefaultSessionDir()
 	if err := a.sm.Save(); err != nil {
-		logging.L().Error("session save failed", "path", path, "error", err.Error())
+		logging.L().Error("session save failed", "dir", dir, "error", err.Error())
 		if msg := err.Error(); msg != a.lastSaveErr {
 			fmt.Fprintf(os.Stderr, "%s %v\n", theme.Muted("[session save failed:]"), err)
 			a.lastSaveErr = msg
@@ -353,7 +377,7 @@ func (a *app) saveSession() {
 		fmt.Fprintln(os.Stderr, theme.Muted("[session saved again]"))
 		a.lastSaveErr = ""
 	}
-	logging.L().Debug("session saved", "path", path)
+	logging.L().Debug("session saved", "dir", dir)
 }
 
 // installSignalHandler makes SIGINT, SIGTERM, SIGHUP and SIGQUIT save the session,
@@ -400,6 +424,7 @@ func (a *app) shutdown(sig os.Signal) {
 	if a.waitForTurn(shutdownGrace) {
 		a.saveSession()
 	}
+	tools.Jobs.StopAll()
 	terminal.Restore()
 	fmt.Println()
 	os.Exit(signalExitCode(sig))
@@ -463,7 +488,11 @@ func (a *app) repl(reader *bufio.Reader) {
 	for {
 		conv := a.promptModel()
 
-		input, action, err := terminal.ReadSeamlessInput(reader)
+		// A background job of this conversation that ends while the prompt is empty starts a
+		// turn, so the model picks the work back up.
+		stopWake := make(chan struct{})
+		input, action, err := terminal.ReadSeamlessInput(reader, tools.Jobs.Wake(conv.ScratchDir, stopWake))
+		close(stopWake)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				fmt.Fprintf(os.Stderr, "%s %v\n", theme.Muted("[input closed:]"), err)
@@ -480,18 +509,30 @@ func (a *app) repl(reader *bufio.Reader) {
 }
 
 // promptModel selects the active conversation for the next prompt, falling back to
-// the default model when its model is no longer configured, and prints the prompt.
+// the default model when its model is no longer configured, and prints the prompt, after a blank
+// line and a divider when a turn has run since the last one.
 func (a *app) promptModel() *session.Conversation {
+	if a.afterTurn {
+		a.afterTurn = false
+		fmt.Printf("\n%s\n", terminal.TurnDivider())
+	}
 	conv := a.sm.Active()
 	if _, err := a.cfg.Resolve(conv.Model); err != nil {
 		conv.Model = a.modelRef
 		a.sm.SetDefaultModel(conv.Model)
 	}
-	modelLabel := conv.Model.Provider + "/" + conv.Model.Model
-	if _, m, err := a.cfg.ResolveModel(conv.Model); err == nil && m.Name != "" {
-		modelLabel += " (" + m.Name + ")"
+	modelLabel, effort := conv.Model.Provider+"/"+conv.Model.Model, ""
+	if p, m, err := a.cfg.ResolveModel(conv.Model); err == nil {
+		if m.Name != "" {
+			modelLabel += " (" + m.Name + ")"
+		}
+		effort = theme.Muted(theme.ASCII(" · ")+"effort: ") + theme.Info(chat.EffortLabel(p, m))
 	}
-	fmt.Printf("%s %s%s\n", theme.Muted("[model:"), theme.Info(modelLabel), theme.Muted("]"))
+	var jobs string
+	if n := tools.Jobs.Running(conv.ScratchDir); n > 0 {
+		jobs = theme.Muted(theme.ASCII(" · ")) + theme.Info(fmt.Sprintf("%d background job%s running", n, map[bool]string{true: "s"}[n > 1]))
+	}
+	fmt.Printf("%s %s%s%s%s\n", theme.Muted("[model:"), theme.Info(modelLabel), effort, jobs, theme.Muted("]"))
 	fmt.Print(terminal.PromptPrefix() + theme.Reset())
 	return conv
 }
@@ -503,6 +544,10 @@ func (a *app) dispatch(input string, action terminal.ShortcutAction, conv *sessi
 	// A keyboard shortcut wins; otherwise a typed slash command maps onto the same action.
 	if action == terminal.ActionNone {
 		action = slashCommandActions[strings.TrimSpace(input)]
+	}
+	if action == terminal.ActionWake {
+		a.runTurn(conv, "")
+		return
 	}
 	if action != terminal.ActionNone {
 		a.handleAction(action, conv, reader)
@@ -521,18 +566,29 @@ func (a *app) dispatch(input string, action terminal.ShortcutAction, conv *sessi
 		if err := agent.HandleHealth(a.cfg, a.client); err != nil {
 			reportError("/health", err)
 		}
-	default:
-		a.reloadConfig()
-		terminal.AddPromptHistory(input)
-		a.busy <- struct{}{}
-		defer func() { <-a.busy }()
-		if err := a.runner.Run(a.ctx, conv, input); err != nil {
-			fmt.Fprintln(os.Stderr)
-			reportError("request to "+conv.Model.Provider+"/"+conv.Model.Model, err)
+	case "/jobs":
+		if err := agent.HandleJobs(reader); err != nil {
+			reportError("/jobs", err)
 		}
-		a.compaction = a.runner.StartCompaction(a.ctx, conv)
-		a.saveSession()
+	default:
+		terminal.AddPromptHistory(input)
+		a.runTurn(conv, input)
 	}
+}
+
+// runTurn sends input to the model as one turn, then starts the compaction it may need and
+// saves the session. An empty input is a turn for background jobs that have ended.
+func (a *app) runTurn(conv *session.Conversation, input string) {
+	a.reloadConfig()
+	a.busy <- struct{}{}
+	defer func() { <-a.busy }()
+	if err := a.runner.Run(a.ctx, conv, input); err != nil {
+		fmt.Fprintln(os.Stderr)
+		reportError("request to "+conv.Model.Provider+"/"+conv.Model.Model, err)
+	}
+	a.compaction = a.runner.StartCompaction(a.ctx, conv)
+	a.saveSession()
+	a.afterTurn = true
 }
 
 // finishCompaction waits for the compaction started after the last turn, if any, and puts the
@@ -576,9 +632,10 @@ func (a *app) handleAction(action terminal.ShortcutAction, conv *session.Convers
 }
 
 // reportError prints the error of a failed command or request, naming what failed so
-// the message stands on its own, then a remediation hint in accessible mode.
+// the message stands on its own, then a remediation hint in accessible mode. A provider's
+// error body and headers are in the message, so it cannot drive the terminal.
 func reportError(what string, err error) {
-	fmt.Fprintf(os.Stderr, "%s %v\n", theme.Danger(what+" failed:"), err)
+	fmt.Fprintf(os.Stderr, "%s %s\n", theme.Danger(what+" failed:"), theme.Sanitize(err.Error()))
 	agent.PrintHint(os.Stderr, err)
 }
 

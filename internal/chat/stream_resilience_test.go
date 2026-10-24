@@ -202,13 +202,8 @@ func TestAnthropicSpeed(t *testing.T) {
 	}
 }
 
-// TestAnthropicStrictToolsAndHeaders checks strict tool flags and that only x-api-key authenticates.
-func TestAnthropicStrictToolsAndHeaders(t *testing.T) {
-	tools := convertToolsToAnthropic([]ToolDefinition{{Type: "function", Function: FunctionDefinition{Name: "t"}}})
-	if len(tools) != 1 || !tools[0].Strict {
-		t.Fatalf("tools = %+v, want strict", tools)
-	}
-
+// TestAnthropicAuthHeaders checks that only x-api-key authenticates.
+func TestAnthropicAuthHeaders(t *testing.T) {
 	var gotKey, gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotKey = r.Header.Get("x-api-key")

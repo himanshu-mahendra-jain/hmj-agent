@@ -37,7 +37,8 @@ func (t *FetchURLTool) Definition() chat.ToolDefinition {
 				"private hosts are fetched every time. " +
 				"For downloading binary files (executables, archives, images), use run_command with curl instead.",
 			Parameters: map[string]any{
-				"type": "object",
+				"type":             "object",
+				chat.PropertyOrder: []string{"url", "timeout_seconds", "max_lines"},
 				"properties": map[string]any{
 					"url": map[string]any{
 						"type":        "string",
@@ -131,7 +132,9 @@ func (t *FetchURLTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if raw := rawGitHubURL(parsedURL); raw != "" {
 		notes = append(notes, "fetched the raw file "+raw+" instead of its GitHub page")
 		targetURL = raw
-		parsedURL, _ = url.Parse(raw)
+		if parsedURL, err = url.Parse(raw); err != nil {
+			return "", fmt.Errorf("raw file URL %q: %w", raw, err)
+		}
 	}
 
 	maxLines := in.MaxLines
@@ -199,9 +202,14 @@ func (t *FetchURLTool) Execute(ctx context.Context, argsJSON string) (string, er
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxFetchBodyBytes))
+	// One byte over the cap shows that the body was cut.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxFetchBodyBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", timedOut(err))
+	}
+	if len(body) > MaxFetchBodyBytes {
+		body = body[:MaxFetchBodyBytes]
+		notes = append(notes, fmt.Sprintf("the response is over %s and was cut there, so the end of the page is missing", formatSize(MaxFetchBodyBytes)))
 	}
 
 	// Detect binary content

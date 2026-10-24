@@ -161,6 +161,44 @@ func TestFetchCacheDropsTheOldestPages(t *testing.T) {
 	}
 }
 
+// The cache holds at most maxCachedBytes of text, dropping the oldest pages first, and keeps
+// no page larger than that.
+func TestFetchCacheBoundsItsSize(t *testing.T) {
+	srv, _ := countingServer(t, "text/plain")
+	cacheTestTool(t, srv)
+	start := time.Now()
+	third := strings.Repeat("x", maxCachedBytes/3)
+	for i := range 4 {
+		cacheNow = func() time.Time { return start.Add(time.Duration(i) * time.Second) }
+		storeFetch(mustParse(t, fmt.Sprintf("https://site%d.example.test/", i)), third, nil)
+	}
+	if _, ok := cachedFetch("https://site0.example.test/"); ok {
+		t.Error("the oldest page is kept over the size limit")
+	}
+	if _, ok := cachedFetch("https://site3.example.test/"); !ok {
+		t.Error("the newest page is not cached")
+	}
+
+	storeFetch(mustParse(t, "https://huge.example.test/"), strings.Repeat("x", maxCachedBytes+1), nil)
+	if _, ok := cachedFetch("https://huge.example.test/"); ok {
+		t.Error("a page over the whole limit is cached")
+	}
+}
+
+// Storing a page frees every page that has expired, not only the oldest ones over the limits.
+func TestStoringAPageFreesExpiredPages(t *testing.T) {
+	srv, _ := countingServer(t, "text/plain")
+	cacheTestTool(t, srv)
+	start := time.Now()
+	cacheNow = func() time.Time { return start }
+	storeFetch(mustParse(t, "https://old.example.test/"), "old", nil)
+	cacheNow = func() time.Time { return start.Add(fetchCacheTTL) }
+	storeFetch(mustParse(t, "https://new.example.test/"), "new", nil)
+	if _, ok := pageCache["https://old.example.test/"]; ok {
+		t.Error("an expired page is still held after another was stored")
+	}
+}
+
 func mustParse(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)

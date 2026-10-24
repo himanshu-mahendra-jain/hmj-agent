@@ -124,8 +124,8 @@ func TestStreamErrorNamesRequestID(t *testing.T) {
 }
 
 // TestHTTPErrorBodyShape checks how a non-2xx body is shown: an Anthropic error as its type and
-// message with the request ID, from the body or else the request-id header, and any other body
-// as it came.
+// message with the request ID, from the body or else the request-id header, a coded error as its
+// code and message, and any other body as it came.
 func TestHTTPErrorBodyShape(t *testing.T) {
 	tests := []struct {
 		name, header, body       string
@@ -148,6 +148,11 @@ func TestHTTPErrorBodyShape(t *testing.T) {
 			name:     "openai body unchanged",
 			body:     `{"error":{"type":"invalid_request_error","message":"bad"}}`,
 			wantBody: `{"error":{"type":"invalid_request_error","message":"bad"}}`,
+		},
+		{
+			name:     "openai responses body",
+			body:     `{"error":{"message":"Your input exceeds the context window.","code":"context_length_exceeded"}}`,
+			wantBody: "context_length_exceeded: Your input exceeds the context window.",
 		},
 		{
 			name:     "html from a proxy",

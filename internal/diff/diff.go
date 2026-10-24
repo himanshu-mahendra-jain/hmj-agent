@@ -8,6 +8,8 @@
 package diff
 
 import (
+	"cmp"
+	"slices"
 	"strings"
 )
 
@@ -101,30 +103,10 @@ func Text(path, oldText, newText string, o Options) *File {
 	a := splitLines(oldText)
 	b := splitLines(newText)
 
-	// Trim the common prefix and suffix so the quadratic LCS only runs over the
-	// region that actually differs (the overwhelmingly common case for surgical
-	// edits) while keeping real line numbers exact.
-	pre := 0
-	for pre < len(a) && pre < len(b) && a[pre] == b[pre] {
-		pre++
-	}
-	suf := 0
-	for suf < len(a)-pre && suf < len(b)-pre && a[len(a)-1-suf] == b[len(b)-1-suf] {
-		suf++
-	}
-
-	ops := diffMiddle(a[pre:len(a)-suf], b[pre:len(b)-suf], pre+1)
-
-	lines := make([]Line, 0, pre+len(ops)+suf)
-	for i := range pre {
-		lines = append(lines, Line{Kind: Ctx, Old: i + 1, New: i + 1, Text: a[i]})
-	}
-	lines = append(lines, ops...)
-	for i := range suf {
-		k := len(a) - suf + i
-		m := len(b) - suf + i
-		lines = append(lines, Line{Kind: Ctx, Old: k + 1, New: m + 1, Text: a[k]})
-	}
+	// diffMiddle trims the common prefix and suffix so the quadratic LCS only
+	// runs over the region that actually differs (the overwhelmingly common
+	// case for surgical edits) while keeping real line numbers exact.
+	lines := diffMiddle(a, b, 1, 1)
 
 	for _, l := range lines {
 		switch l.Kind {
@@ -147,17 +129,109 @@ func Text(path, oldText, newText string, o Options) *File {
 }
 
 // diffMiddle produces Del/Add/Ctx rows for the differing middle sections.
-// startLine is the 1-based file line number of the first row in either slice.
-func diffMiddle(a, b []string, startLine int) []Line {
-	if len(a)*len(b) <= lcsCellBudget {
-		return lcsLines(a, b, startLine)
+// aStart and bStart are the 1-based file line numbers of a[0] and b[0].
+//
+// A region too large for the LCS table is split at its patience anchors, lines
+// that occur exactly once in each side, so edits far apart in a long file (one
+// edit_file call changing the imports and a function 600 lines below) diff as
+// separate small regions. Only a region with no anchors left falls back to
+// block mode.
+func diffMiddle(a, b []string, aStart, bStart int) []Line {
+	pre := 0
+	for pre < len(a) && pre < len(b) && a[pre] == b[pre] {
+		pre++
 	}
-	return blockLines(a, b, startLine)
+	suf := 0
+	for suf < len(a)-pre && suf < len(b)-pre && a[len(a)-1-suf] == b[len(b)-1-suf] {
+		suf++
+	}
+
+	out := make([]Line, 0, len(a)+len(b)-pre-suf)
+	for i := range pre {
+		out = append(out, Line{Kind: Ctx, Old: aStart + i, New: bStart + i, Text: a[i]})
+	}
+	ma, mb := a[pre:len(a)-suf], b[pre:len(b)-suf]
+	as, bs := aStart+pre, bStart+pre
+	switch {
+	case len(ma)*len(mb) <= lcsCellBudget:
+		out = append(out, lcsLines(ma, mb, as, bs)...)
+	default:
+		anchors := patienceAnchors(ma, mb)
+		if len(anchors) == 0 {
+			out = append(out, blockLines(ma, mb, as, bs)...)
+			break
+		}
+		i, j := 0, 0
+		for _, an := range anchors {
+			out = append(out, diffMiddle(ma[i:an[0]], mb[j:an[1]], as+i, bs+j)...)
+			out = append(out, Line{Kind: Ctx, Old: as + an[0], New: bs + an[1], Text: ma[an[0]]})
+			i, j = an[0]+1, an[1]+1
+		}
+		out = append(out, diffMiddle(ma[i:], mb[j:], as+i, bs+j)...)
+	}
+	for k := range suf {
+		i := len(a) - suf + k
+		out = append(out, Line{Kind: Ctx, Old: aStart + i, New: bStart + len(b) - suf + k, Text: a[i]})
+	}
+	return out
+}
+
+// patienceAnchors returns index pairs [i, j] with a[i] == b[j], each line
+// occurring exactly once in a and once in b, forming the longest run that is
+// increasing on both sides.
+func patienceAnchors(a, b []string) [][2]int {
+	type seen struct{ inA, inB, i, j int }
+	counts := make(map[string]*seen, len(a))
+	for i, l := range a {
+		s := counts[l]
+		if s == nil {
+			s = &seen{}
+			counts[l] = s
+		}
+		s.inA++
+		s.i = i
+	}
+	for j, l := range b {
+		if s := counts[l]; s != nil {
+			s.inB++
+			s.j = j
+		}
+	}
+
+	// Pairs in a's order; the longest increasing subsequence of their j.
+	var pairs [][2]int
+	for _, l := range a {
+		if s := counts[l]; s.inA == 1 && s.inB == 1 {
+			pairs = append(pairs, [2]int{s.i, s.j})
+		}
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+	tails := []int{}                // tails[k]: index in pairs of the smallest j ending a run of k+1
+	prev := make([]int, len(pairs)) // predecessor in that run, -1 at its start
+	for p, pr := range pairs {
+		k, _ := slices.BinarySearchFunc(tails, pr[1], func(t, j int) int { return cmp.Compare(pairs[t][1], j) })
+		prev[p] = -1
+		if k > 0 {
+			prev[p] = tails[k-1]
+		}
+		if k == len(tails) {
+			tails = append(tails, p)
+		} else {
+			tails[k] = p
+		}
+	}
+	run := make([][2]int, len(tails))
+	for k, p := len(tails)-1, tails[len(tails)-1]; p >= 0; k, p = k-1, prev[p] {
+		run[k] = pairs[p]
+	}
+	return run
 }
 
 // lcsLines walks a longest-common-subsequence table to emit the classic
 // delete-then-add interleave for the changed region.
-func lcsLines(a, b []string, start int) []Line {
+func lcsLines(a, b []string, aStart, bStart int) []Line {
 	n, m := len(a), len(b)
 	// dp[i][j] = LCS length of a[i:], b[j:]
 	dp := make([]int32, (n+1)*(m+1))
@@ -180,35 +254,35 @@ func lcsLines(a, b []string, start int) []Line {
 	for i < n && j < m {
 		switch {
 		case a[i] == b[j]:
-			out = append(out, Line{Kind: Ctx, Old: start + i, New: start + j, Text: a[i]})
+			out = append(out, Line{Kind: Ctx, Old: aStart + i, New: bStart + j, Text: a[i]})
 			i++
 			j++
 		case dp[(i+1)*stride+j] >= dp[i*stride+j+1]:
-			out = append(out, Line{Kind: Del, Old: start + i, Text: a[i]})
+			out = append(out, Line{Kind: Del, Old: aStart + i, Text: a[i]})
 			i++
 		default:
-			out = append(out, Line{Kind: Add, New: start + j, Text: b[j]})
+			out = append(out, Line{Kind: Add, New: bStart + j, Text: b[j]})
 			j++
 		}
 	}
 	for ; i < n; i++ {
-		out = append(out, Line{Kind: Del, Old: start + i, Text: a[i]})
+		out = append(out, Line{Kind: Del, Old: aStart + i, Text: a[i]})
 	}
 	for ; j < m; j++ {
-		out = append(out, Line{Kind: Add, New: start + j, Text: b[j]})
+		out = append(out, Line{Kind: Add, New: bStart + j, Text: b[j]})
 	}
 	return out
 }
 
 // blockLines is the fallback for huge changes: everything removed, then
 // everything added. Numbers stay correct, only the interleaving is lost.
-func blockLines(a, b []string, start int) []Line {
+func blockLines(a, b []string, aStart, bStart int) []Line {
 	out := make([]Line, 0, len(a)+len(b))
 	for i := range a {
-		out = append(out, Line{Kind: Del, Old: start + i, Text: a[i]})
+		out = append(out, Line{Kind: Del, Old: aStart + i, Text: a[i]})
 	}
 	for j := range b {
-		out = append(out, Line{Kind: Add, New: start + j, Text: b[j]})
+		out = append(out, Line{Kind: Add, New: bStart + j, Text: b[j]})
 	}
 	return out
 }

@@ -84,7 +84,7 @@ func TestAccessibleReadLines(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reader := bufio.NewReader(strings.NewReader(tt.input))
-			got, action, err := ReadSeamlessInput(reader)
+			got, action, err := ReadSeamlessInput(reader, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -103,10 +103,10 @@ func TestAccessibleReadEOF(t *testing.T) {
 	pipeStdin(t)
 
 	reader := bufio.NewReader(strings.NewReader("only\n"))
-	if got, _, err := ReadSeamlessInput(reader); err != nil || got != "only" {
+	if got, _, err := ReadSeamlessInput(reader, nil); err != nil || got != "only" {
 		t.Fatalf("first read = (%q, %v), want (only, nil)", got, err)
 	}
-	if _, _, err := ReadSeamlessInput(reader); !errors.Is(err, io.EOF) {
+	if _, _, err := ReadSeamlessInput(reader, nil); !errors.Is(err, io.EOF) {
 		t.Fatalf("read at end = %v, want io.EOF", err)
 	}
 }
@@ -119,7 +119,7 @@ func TestAccessibleReadCookedOnTerminal(t *testing.T) {
 	setAccessible(t)
 	master, slave, err := openPTY()
 	if err != nil {
-		t.Skipf("PTY not available in environment: %v", err)
+		t.Fatalf("opening a PTY: %v", err)
 	}
 	defer master.Close()
 	defer slave.Close()
@@ -147,7 +147,7 @@ func TestAccessibleReadCookedOnTerminal(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		text, _, err := ReadSeamlessInput(reader)
+		text, _, err := ReadSeamlessInput(reader, nil)
 		done <- result{text, err}
 	}()
 	select {
@@ -168,7 +168,7 @@ func TestAccessibleReadCookedOnTerminal(t *testing.T) {
 		master.Write([]byte{0x04})
 	}()
 	go func() {
-		_, _, err := ReadSeamlessInput(reader)
+		_, _, err := ReadSeamlessInput(reader, nil)
 		done <- result{err: err}
 	}()
 	select {
@@ -193,7 +193,7 @@ func TestAccessibleCommandMenuOnTerminal(t *testing.T) {
 	setAccessible(t)
 	master, slave, err := openPTY()
 	if err != nil {
-		t.Skipf("PTY not available in environment: %v", err)
+		t.Fatalf("opening a PTY: %v", err)
 	}
 	defer master.Close()
 	defer slave.Close()
@@ -209,7 +209,7 @@ func TestAccessibleCommandMenuOnTerminal(t *testing.T) {
 	var got string
 	var err2 error
 	out := captureStdout(t, func() {
-		got, _, err2 = ReadSeamlessInput(reader)
+		got, _, err2 = ReadSeamlessInput(reader, nil)
 	})
 	if err2 != nil {
 		t.Fatalf("unexpected error: %v", err2)
@@ -372,6 +372,17 @@ func TestAccessibleSelectRenameAndDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("a confirmation cut off by the end of input deletes nothing", func(t *testing.T) {
+		fake := &fakeCallbacks{}
+		reader := bufio.NewReader(strings.NewReader("d 1\ny"))
+		out := captureStdout(t, func() {
+			InteractiveSelect("pick", items, 0, reader, fake.callbacks())
+		})
+		if len(fake.deleted) != 0 || !strings.Contains(out, "delete cancelled") {
+			t.Errorf("deleted %v (output %q), want the delete cancelled", fake.deleted, out)
+		}
+	})
+
 	t.Run("delete declined", func(t *testing.T) {
 		fake := &fakeCallbacks{}
 		reader := bufio.NewReader(strings.NewReader("d 1\nn\nq\n"))
@@ -387,8 +398,7 @@ func TestAccessibleSelectRenameAndDelete(t *testing.T) {
 		fake := &fakeCallbacks{}
 		bad := []SelectItem{{ID: "bad", Text: "broken"}}
 		reader := bufio.NewReader(strings.NewReader("d 1\ny\n"))
-		var out string
-		out = captureStdout(t, func() {
+		out := captureStdout(t, func() {
 			InteractiveSelect("pick", bad, 0, reader, fake.callbacks())
 		})
 		if !strings.Contains(out, "delete failed") {
@@ -411,8 +421,7 @@ func TestAccessibleSelectRenameAndDelete(t *testing.T) {
 
 	t.Run("commands need callbacks", func(t *testing.T) {
 		reader := bufio.NewReader(strings.NewReader("r 1 x\nq\n"))
-		var out string
-		out = captureStdout(t, func() {
+		out := captureStdout(t, func() {
 			InteractiveSelect("pick", items, 0, reader, nil)
 		})
 		if !strings.Contains(out, "(no matching results)") {

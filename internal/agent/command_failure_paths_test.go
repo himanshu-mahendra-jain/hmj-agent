@@ -15,19 +15,18 @@ import (
 )
 
 // unsavableManager returns a session manager with conversations named names whose session
-// file cannot be written: its directory would have to be created under a regular file.
+// directory cannot be written: it lies under a regular file.
 func unsavableManager(t *testing.T, names ...string) *session.SessionManager {
 	t.Helper()
 	blocker := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sm := session.NewSessionManager(config.ModelRef{Provider: "p", Model: "m1"})
+	sm := session.LoadSessionManager(filepath.Join(blocker, "sessions"), config.ModelRef{Provider: "p", Model: "m1"})
 	sm.Rename(sm.ActiveID, names[0])
 	for _, n := range names[1:] {
 		sm.New(n)
 	}
-	sm.SetStoragePath(filepath.Join(blocker, "sessions.json"))
 	return sm
 }
 
@@ -97,7 +96,7 @@ func TestCommandsReportSaveFailures(t *testing.T) {
 
 // resumeItem returns the resume selector item of the conversation named name.
 func resumeItem(sm *session.SessionManager, name string) terminal.SelectItem {
-	items, _ := buildResumeItems(sm.List(), sm.ActiveID)
+	items, _ := buildResumeItems(sm.List(), sm)
 	for _, it := range items {
 		if strings.Contains(it.Text, "] "+name+" (") {
 			return it
@@ -110,7 +109,7 @@ func resumeItem(sm *session.SessionManager, name string) terminal.SelectItem {
 // menu waits for a choice, the command is cancelled: no error, and nothing changes.
 func TestSelectorsEndedByEOFCancel(t *testing.T) {
 	useAccessibility(t)
-	sm := session.NewSessionManager(config.ModelRef{Provider: "p", Model: "m1"})
+	sm := session.LoadSessionManager("", config.ModelRef{Provider: "p", Model: "m1"})
 	sm.New("second")
 	active := sm.ActiveID
 
@@ -129,7 +128,7 @@ func TestSelectorsEndedByEOFCancel(t *testing.T) {
 
 // TestHandleModelsWithoutModels checks the message for a config without models.
 func TestHandleModelsWithoutModels(t *testing.T) {
-	sm := session.NewSessionManager(config.ModelRef{})
+	sm := session.LoadSessionManager("", config.ModelRef{})
 	out := captureOutput(t, func() {
 		if err := HandleModels(config.Config{}, sm, lines("1\n")); err != nil {
 			t.Errorf("HandleModels: %v", err)
@@ -150,7 +149,7 @@ func TestHandleModelsSelectsByProviderWithLeadingDigits(t *testing.T) {
 		"acme":  {BaseURL: "http://127.0.0.1:1", Models: []config.Model{{ID: "a1"}}},
 		"2fast": {BaseURL: "http://127.0.0.1:1", Models: []config.Model{{ID: "gpt"}}},
 	}}
-	sm := session.NewSessionManager(config.ModelRef{Provider: "acme", Model: "a1"})
+	sm := session.LoadSessionManager("", config.ModelRef{Provider: "acme", Model: "a1"})
 	captureOutput(t, func() {
 		if err := HandleModels(cfg, sm, lines("1\n")); err != nil {
 			t.Fatalf("HandleModels: %v", err)
@@ -170,5 +169,26 @@ func TestHandleHealthWithoutModels(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no models configured") {
 		t.Errorf("output = %q", out.String())
+	}
+}
+
+// TestHandleModelsShowsEffort checks that each model in the /models list names the effort its
+// requests carry.
+func TestHandleModelsShowsEffort(t *testing.T) {
+	useAccessibility(t)
+	cfg := config.Config{Providers: map[string]config.Provider{
+		"claude": {BaseURL: "http://127.0.0.1:1", API: config.APIAnthropic, Models: []config.Model{{ID: "opus", Effort: "high"}}},
+		"local":  {BaseURL: "http://127.0.0.1:1", API: config.APICompletions, Models: []config.Model{{ID: "qwen", Effort: "low"}}},
+	}}
+	sm := session.LoadSessionManager("", config.ModelRef{Provider: "claude", Model: "opus"})
+	out := captureOutput(t, func() {
+		if err := HandleModels(cfg, sm, lines("\n")); err != nil {
+			t.Fatalf("HandleModels: %v", err)
+		}
+	})
+	for _, want := range []string{"claude/opus | effort: high", "local/qwen | effort: default (low not sent: Chat Completions)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("/models list lacks %q:\n%s", want, out)
+		}
 	}
 }

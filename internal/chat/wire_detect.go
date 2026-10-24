@@ -232,7 +232,10 @@ func (c *Client) probeRoute(ctx context.Context, cand probeCandidate, apiKey str
 		return probeUnknown, 0, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxProbeBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBodyBytes))
+	if err != nil {
+		return probeUnknown, resp.StatusCode, err
+	}
 	return classifyProbe(cand.api, resp.StatusCode, resp.Header.Get("Content-Type"), body), resp.StatusCode, nil
 }
 

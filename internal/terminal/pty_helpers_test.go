@@ -23,7 +23,7 @@ func newPTYScreen(t *testing.T) *ptyScreen {
 	t.Helper()
 	master, slave, err := openPTY()
 	if err != nil {
-		t.Skipf("PTY not available in environment: %v", err)
+		t.Fatalf("opening a PTY: %v", err)
 	}
 	p := &ptyScreen{master: master, slave: slave}
 	oldIn, oldOut := os.Stdin, os.Stdout

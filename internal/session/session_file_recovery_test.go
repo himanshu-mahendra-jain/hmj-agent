@@ -31,14 +31,25 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-out
 }
 
-// writeSessionFile writes content as a session file in a new directory and returns its path.
-func writeSessionFile(t *testing.T, content string) string {
+// writeSessionDir writes a session directory in a new temporary directory and returns it:
+// state.json, when state is not empty, and each conversation as conversations/<id>.json.
+func writeSessionDir(t *testing.T, state string, conversations map[string]string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "conversations"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	if state != "" {
+		if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(state), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, conv := range conversations {
+		if err := os.WriteFile(filepath.Join(dir, "conversations", id+".json"), []byte(conv), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
 }
 
 // skipAsRoot skips tests that rely on permission bits, which root ignores.
@@ -51,57 +62,44 @@ func skipAsRoot(t *testing.T) {
 
 var testModel = config.ModelRef{Provider: "p", Model: "m"}
 
-// TestLoadSessionManagerSurvivesNullConversations checks that a session file holding a null
-// conversation (hand-edited, or written by an older version) loads the remaining
-// conversations instead of crashing at startup.
-func TestLoadSessionManagerSurvivesNullConversations(t *testing.T) {
-	cases := []struct {
-		name       string
-		file       string
-		wantNames  []string
-		wantActive string
-	}{
-		{
-			name:       "null beside a real conversation",
-			file:       `{"activeId":"1","order":["1","2"],"conversations":{"1":null,"2":{"id":"2","name":"two"}}}`,
-			wantNames:  []string{"two"},
-			wantActive: "two",
-		},
-		{
-			name:       "only null conversations",
-			file:       `{"activeId":"1","order":["1"],"conversations":{"1":null}}`,
-			wantNames:  []string{"default"},
-			wantActive: "default",
-		},
+// TestLoadSessionManagerDropsIDsThatAreNotOnePathElement checks that conversation files whose
+// name gives an ID of "", "." or "..", and the temporary files writes leave, are not loaded: such
+// an ID's scratch directory would lie outside the scratch root, and deleting the conversation
+// would remove it.
+func TestLoadSessionManagerDropsIDsThatAreNotOnePathElement(t *testing.T) {
+	dir := writeSessionDir(t, `{"activeId":".."}`, map[string]string{
+		"": `{"name":"empty"}`, ".": `{"name":"dot"}`, "..": `{"name":"parent"}`,
+		".ok.json.tmp1": `{"name":"temporary"}`, "ok": `{"name":"kept"}`,
+	})
+	outside := filepath.Join(dir, "keep-me")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			sm := LoadSessionManager(writeSessionFile(t, tc.file), testModel)
-			var names []string
-			for _, c := range sm.List() {
-				names = append(names, c.Name)
-			}
-			if strings.Join(names, ",") != strings.Join(tc.wantNames, ",") {
-				t.Errorf("conversations = %v, want %v", names, tc.wantNames)
-			}
-			if got := sm.Active().Name; got != tc.wantActive {
-				t.Errorf("active = %q, want %q", got, tc.wantActive)
-			}
-			if err := sm.Save(); err != nil {
-				t.Errorf("Save after loading: %v", err)
-			}
-		})
+	sm := LoadSessionManager(dir, testModel)
+	list := sm.List()
+	if len(list) != 1 || list[0].Name != "kept" || sm.Active().Name != "kept" {
+		t.Fatalf("loaded %d conversations, active %q; want only the one named ok", len(list), sm.Active().Name)
+	}
+	if got := filepath.Dir(list[0].ScratchDir); got != filepath.Join(dir, "scratch") {
+		t.Errorf("scratch directory %s is not in the scratch root", list[0].ScratchDir)
+	}
+	if err := sm.Delete("ok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("a directory beside the scratch root went with the conversation: %v", err)
 	}
 }
 
 // TestLoadSessionManagerUsesTheKeyAsID checks that a conversation whose stored id is missing
-// or differs from its key can still be resumed, renamed and deleted by the key that the
-// order and the active ID use.
+// or differs from its file name can still be resumed, renamed and deleted by the file name,
+// which the active ID uses.
 func TestLoadSessionManagerUsesTheKeyAsID(t *testing.T) {
-	path := writeSessionFile(t, `{"activeId":"1","order":["1","2"],"conversations":{
-		"1":{"id":"1","name":"one","model":{"provider":"p","model":"m"}},
-		"2":{"name":"two","model":{"provider":"p","model":"m"}}}}`)
-	sm := LoadSessionManager(path, testModel)
+	dir := writeSessionDir(t, `{"activeId":"1"}`, map[string]string{
+		"1": `{"id":"1","name":"one","model":{"provider":"p","model":"m"}}`,
+		"2": `{"id":"9","name":"two","model":{"provider":"p","model":"m"}}`,
+	})
+	sm := LoadSessionManager(dir, testModel)
 	conv, err := sm.Resume("two")
 	if err != nil {
 		t.Fatal(err)
@@ -119,11 +117,12 @@ func TestLoadSessionManagerUsesTheKeyAsID(t *testing.T) {
 // unstarted conversation gets the system prompt.
 func TestLoadSessionManagerFinishesLoadedConversations(t *testing.T) {
 	t.Chdir(t.TempDir())
-	path := writeSessionFile(t, `{"activeId":"7","order":["7","3"],"counter":1,"conversations":{
-		"7":{"id":"7","name":"started","model":{"provider":"p","model":"m"},"messages":[
-			{"role":"system","content":"s"},{"role":"user","content":"run it"},{"role":"assistant","content":"done"}]},
-		"3":{"id":"3","name":"unstarted","messages":[{"role":"assistant","content":"hello"}]}}}`)
-	sm := LoadSessionManager(path, config.ModelRef{Provider: "fallback", Model: "f"})
+	dir := writeSessionDir(t, `{"activeId":"7"}`, map[string]string{
+		"7": `{"id":"7","name":"started","model":{"provider":"p","model":"m"},"messages":[
+			{"role":"system","content":"s"},{"role":"user","content":"run it"},{"role":"assistant","content":"done"}]}`,
+		"3": `{"id":"3","name":"unstarted","messages":[{"role":"assistant","content":"hello"}]}`,
+	})
+	sm := LoadSessionManager(dir, config.ModelRef{Provider: "fallback", Model: "f"})
 
 	if sm.DefaultModel != testModel {
 		t.Errorf("default model = %+v, want the active conversation's model", sm.DefaultModel)
@@ -140,53 +139,51 @@ func TestLoadSessionManagerFinishesLoadedConversations(t *testing.T) {
 	}
 }
 
-// TestLoadSessionManagerUnreadableFiles checks that a session file that cannot be read, or a
-// corrupt one that cannot be moved aside, starts a fresh session with a warning.
+// TestLoadSessionManagerUnreadableFiles checks that a conversation file that cannot be read is
+// passed over, and a corrupt one that cannot be moved aside is reported, while hmj starts with a
+// fresh conversation.
 func TestLoadSessionManagerUnreadableFiles(t *testing.T) {
-	t.Run("path is a directory", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "sessions.json")
-		if err := os.Mkdir(path, 0o700); err != nil {
+	t.Run("conversation file is a directory", func(t *testing.T) {
+		dir := writeSessionDir(t, "", nil)
+		if err := os.Mkdir(filepath.Join(dir, "conversations", "1.json"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		var sm *SessionManager
-		out := captureStderr(t, func() { sm = LoadSessionManager(path, testModel) })
-		if !strings.Contains(out, "warning: could not read session file") {
-			t.Errorf("stderr = %q", out)
-		}
-		if len(sm.List()) != 1 || sm.Active().Name != "default" {
-			t.Errorf("want one fresh default conversation, got %d", len(sm.List()))
+		sm := LoadSessionManager(dir, testModel)
+		if len(sm.List()) != 1 || sm.Active().Name != "default" || sm.ActiveID != "2" {
+			t.Errorf("want one fresh default conversation with ID 2, got %d, active %s", len(sm.List()), sm.ActiveID)
 		}
 	})
 	t.Run("corrupt file in a read-only directory", func(t *testing.T) {
 		skipAsRoot(t)
-		path := writeSessionFile(t, "{not json")
-		dir := filepath.Dir(path)
-		if err := os.Chmod(dir, 0o500); err != nil {
+		dir := writeSessionDir(t, "", map[string]string{"1": "{not json"})
+		convDir := filepath.Join(dir, "conversations")
+		if err := os.Chmod(convDir, 0o500); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+		t.Cleanup(func() { os.Chmod(convDir, 0o700) })
 		var sm *SessionManager
-		out := captureStderr(t, func() { sm = LoadSessionManager(path, testModel) })
+		out := captureStderr(t, func() { sm = LoadSessionManager(dir, testModel) })
 		if !strings.Contains(out, "could not be moved aside") || !strings.Contains(out, "Reason:") {
 			t.Errorf("stderr = %q", out)
 		}
 		if sm.Active().Name != "default" {
 			t.Errorf("active = %q, want a fresh default", sm.Active().Name)
 		}
-		if data, _ := os.ReadFile(path); string(data) != "{not json" {
+		if data, _ := os.ReadFile(filepath.Join(convDir, "1.json")); string(data) != "{not json" {
 			t.Errorf("the damaged file was changed: %q", data)
 		}
 	})
 }
 
-// TestSaveFailures checks that Save reports a session file it cannot write and leaves no
+// TestSaveFailures checks that Save reports a conversation it cannot write and leaves no
 // temporary file behind.
 func TestSaveFailures(t *testing.T) {
 	t.Run("directory cannot be created", func(t *testing.T) {
 		blocker := filepath.Join(t.TempDir(), "file")
-		os.WriteFile(blocker, nil, 0o600)
-		sm := NewSessionManager(testModel)
-		sm.SetStoragePath(filepath.Join(blocker, "sessions.json"))
+		if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sm := LoadSessionManager(filepath.Join(blocker, "sessions"), testModel)
 		if err := sm.Save(); err == nil {
 			t.Error("Save succeeded under a regular file")
 		}
@@ -194,16 +191,21 @@ func TestSaveFailures(t *testing.T) {
 	t.Run("directory is read-only", func(t *testing.T) {
 		skipAsRoot(t)
 		dir := t.TempDir()
-		os.Chmod(dir, 0o500)
-		t.Cleanup(func() { os.Chmod(dir, 0o700) })
-		sm := NewSessionManager(testModel)
-		sm.SetStoragePath(filepath.Join(dir, "sessions.json"))
+		sm := LoadSessionManager(dir, testModel)
+		convDir := filepath.Join(dir, "conversations")
+		if err := os.Chmod(convDir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(convDir, 0o700) })
 		if err := sm.Save(); !errors.Is(err, os.ErrPermission) {
 			t.Errorf("Save = %v, want a permission error", err)
 		}
+		if temps, _ := filepath.Glob(filepath.Join(convDir, ".*")); len(temps) > 0 {
+			t.Errorf("temporary files left behind: %v", temps)
+		}
 	})
 	t.Run("no storage path", func(t *testing.T) {
-		if err := NewSessionManager(testModel).Save(); err != nil {
+		if err := LoadSessionManager("", testModel).Save(); err != nil {
 			t.Errorf("Save without a path = %v, want nil", err)
 		}
 	})
@@ -212,7 +214,7 @@ func TestSaveFailures(t *testing.T) {
 // TestActiveFallsBack checks that Active repairs a dangling active ID: the first ordered
 // conversation becomes active, or a default one is created when there are none.
 func TestActiveFallsBack(t *testing.T) {
-	sm := NewSessionManager(testModel)
+	sm := LoadSessionManager("", testModel)
 	first := sm.ActiveID
 	sm.New("second")
 	sm.ActiveID = "ghost"
@@ -229,11 +231,11 @@ func TestActiveFallsBack(t *testing.T) {
 // TestResumeQueries checks every way a conversation can be named for Resume, and the errors
 // for queries that match none or several.
 func TestResumeQueries(t *testing.T) {
-	sm := NewSessionManager(testModel) // 1 "default"
-	sm.New("deploy staging")           // 2
-	sm.New("deploy prod")              // 3
-	sm.New("Twin")                     // 4
-	sm.New("twin")                     // 5
+	sm := LoadSessionManager("", testModel) // 1 "default"
+	sm.New("deploy staging")                // 2
+	sm.New("deploy prod")                   // 3
+	sm.New("Twin")                          // 4
+	sm.New("twin")                          // 5
 	cases := []struct {
 		query   string
 		wantID  string
@@ -268,7 +270,7 @@ func TestResumeQueries(t *testing.T) {
 // TestResumeByListPosition checks that a number that is not an ID picks the conversation at
 // that position in the list.
 func TestResumeByListPosition(t *testing.T) {
-	sm := NewSessionManager(testModel)
+	sm := LoadSessionManager("", testModel)
 	sm.New("b")
 	sm.New("c")
 	if err := sm.Delete("1"); err != nil {

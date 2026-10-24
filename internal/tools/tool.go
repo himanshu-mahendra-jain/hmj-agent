@@ -24,8 +24,13 @@ const (
 	MaxReadFileBytes = 256 * 1024
 	// MaxCommandOutputBytes is the combined stdout and stderr kept from run_command.
 	MaxCommandOutputBytes = 64 * 1024
-	// MaxFetchBodyBytes is the largest response body fetch_url will read.
-	MaxFetchBodyBytes = 4 * 1024 * 1024
+	// MaxCommandTimeoutSeconds is the longest timeout_seconds run_command accepts: long enough
+	// for a full build or device test suite.
+	MaxCommandTimeoutSeconds = 30 * 60
+	// MaxFetchBodyBytes is the largest response body fetch_url will read. Documentation sites
+	// put megabytes of inline navigation before <main>: an Android reference page is 4.4MB,
+	// its content past the first 4MB.
+	MaxFetchBodyBytes = 16 * 1024 * 1024
 	// MaxFetchOutputBytes caps the text fetch_url returns, whatever its line count.
 	MaxFetchOutputBytes = 64 * 1024
 )
@@ -48,6 +53,19 @@ type Tool interface {
 	Execute(ctx context.Context, argsJSON string) (string, error)
 }
 
+// Result is a tool's answer with pictures for the model to see after its text.
+type Result struct {
+	Text   string
+	Images []chat.Image
+}
+
+// ImageTool is a Tool that can answer with pictures. The agent calls ExecuteWithImages in
+// place of Execute.
+type ImageTool interface {
+	Tool
+	ExecuteWithImages(ctx context.Context, argsJSON string) (Result, error)
+}
+
 // DefaultTools returns a new instance of each built-in tool.
 func DefaultTools() []Tool {
 	return []Tool{
@@ -55,7 +73,9 @@ func DefaultTools() []Tool {
 		&EditFileTool{},
 		&WriteFileTool{},
 		&ListFilesTool{},
+		&GrepTool{},
 		&RunCommandTool{},
+		&CheckCommandTool{},
 		&WebSearchTool{},
 		&FetchURLTool{},
 	}

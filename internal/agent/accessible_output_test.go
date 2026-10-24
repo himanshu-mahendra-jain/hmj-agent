@@ -12,7 +12,6 @@ import (
 
 	"hmj-agent/internal/chat"
 	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal"
 	"hmj-agent/internal/terminal/theme"
 	"hmj-agent/internal/tools"
 )
@@ -82,13 +81,13 @@ func TestToolOutputUsesBlocksInAccessibleMode(t *testing.T) {
 
 	conv := &session.Conversation{Messages: []chat.Message{
 		{Role: "user", Content: "list"},
-		{Role: "assistant", ToolCalls: []chat.ToolCall{{ID: "t1", Function: chat.ToolCallFunction{Name: "list_files", Arguments: `{"path":"."}`}}}},
+		{Role: "assistant", ToolCalls: []chat.ToolCall{{ID: "t1", Function: chat.ToolCallFunction{Name: "run_command", Arguments: `{"command":"ls"}`}}}},
 		{Role: "tool", ToolCallID: "t1", Content: "a.go\nb.go"},
 		{Role: "assistant", Content: "done"},
 	}}
 
 	out := captureOutput(t, func() { PrintConversationHistory(conv) })
-	if !strings.Contains(out, "[RESULT list_files]\n  a.go\n  b.go\n[END RESULT]") {
+	if !strings.Contains(out, "[RESULT run_command]\n  a.go\n  b.go\n[END RESULT]") {
 		t.Errorf("expected a framed result block, got %q", out)
 	}
 	if strings.Contains(out, "│") {
@@ -106,7 +105,7 @@ func TestTurnHistoryViewUsesBlocksInAccessibleMode(t *testing.T) {
 		{Role: "assistant", ToolCalls: []chat.ToolCall{{ID: "t1", Function: chat.ToolCallFunction{Name: "read_file"}}}},
 		{Role: "tool", ToolCallID: "t1", Content: "line"},
 	}}
-	turns := ExtractTurns(conv)
+	turns := turnsOf(conv.Messages)
 	if len(turns) != 1 || !strings.Contains(turns[0].Response, "[RESULT read_file]\n  line\n[END RESULT]") {
 		t.Fatalf("turn response = %q, want a framed block", turns[0].Response)
 	}
@@ -188,7 +187,7 @@ func TestAccessibleDiffKeepsFileContent(t *testing.T) {
 	if err := os.WriteFile(path, []byte("keep → arrow\nold\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := captureOutput(t, func() { PrintEditFileCall(path, "old", "new") })
+	out := captureOutput(t, func() { printEditFileDiff(path, "old", "new") })
 	if !strings.Contains(out, "keep → arrow") {
 		t.Errorf("context line content was altered: %q", out)
 	}
@@ -216,11 +215,14 @@ func (f fakeTool) Execute(ctx context.Context, _ string) (string, error) {
 }
 
 // runFakeTool runs one tool call through runTool and returns the stdout it produced.
+// testProgressEvery is the progress interval runFakeTool's runner reports at.
+var testProgressEvery time.Duration
+
 func runFakeTool(t *testing.T, ctx context.Context, tool tools.Tool) string {
 	t.Helper()
-	r := &Runner{Tools: map[string]tools.Tool{tool.Name(): tool}}
+	r := &Runner{Tools: map[string]tools.Tool{tool.Name(): tool}, progressEvery: testProgressEvery}
 	tc := chat.ToolCall{ID: "c1", Function: chat.ToolCallFunction{Name: tool.Name(), Arguments: "{}"}}
-	return captureOutput(t, func() { r.runTool(ctx, tc) })
+	return captureOutput(t, func() { r.runTool(ctx, tc, nil) })
 }
 
 // progressLinesStopBeforeResult checks that every progress line comes before the duration
@@ -240,10 +242,10 @@ func progressLinesStopBeforeResult(t *testing.T, out string) int {
 func TestToolProgressInAccessibleMode(t *testing.T) {
 	theme.SetAccessibility(true)
 	theme.SetEnabled(false)
-	terminal.SetAccessibleReportInterval(10 * time.Millisecond)
+	testProgressEvery = 10 * time.Millisecond
 	defer func() {
 		theme.SetAccessibility(false)
-		terminal.SetAccessibleReportInterval(15 * time.Second)
+		testProgressEvery = 0
 	}()
 
 	t.Run("long tool prints periodic lines then stops", func(t *testing.T) {
@@ -274,8 +276,8 @@ func TestToolProgressInAccessibleMode(t *testing.T) {
 	})
 
 	t.Run("tool finishing within one interval prints nothing", func(t *testing.T) {
-		terminal.SetAccessibleReportInterval(time.Second)
-		defer terminal.SetAccessibleReportInterval(10 * time.Millisecond)
+		testProgressEvery = time.Second
+		defer func() { testProgressEvery = 10 * time.Millisecond }()
 		out := runFakeTool(t, context.Background(), fakeTool{d: time.Millisecond})
 		if strings.Contains(out, "[running]") {
 			t.Errorf("fast tool printed progress: %q", out)
@@ -285,8 +287,8 @@ func TestToolProgressInAccessibleMode(t *testing.T) {
 
 func TestToolProgressOffInDefaultMode(t *testing.T) {
 	theme.SetAccessibility(false)
-	terminal.SetAccessibleReportInterval(10 * time.Millisecond)
-	defer terminal.SetAccessibleReportInterval(15 * time.Second)
+	testProgressEvery = 10 * time.Millisecond
+	defer func() { testProgressEvery = 0 }()
 
 	out := runFakeTool(t, context.Background(), fakeTool{d: 60 * time.Millisecond})
 	if strings.Contains(out, "[running]") {

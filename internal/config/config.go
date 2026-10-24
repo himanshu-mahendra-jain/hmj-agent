@@ -95,7 +95,7 @@ type Provider struct {
 // Wire protocol identifiers for Provider.API.
 const (
 	APIResponses   = "responses"   // OpenAI Responses API (POST /responses)
-	APICompletions = "completions" // Legacy OpenAI Chat Completions (POST /chat/completions)
+	APICompletions = "completions" // OpenAI Chat Completions (POST /chat/completions), spoken by most local servers
 	APIAnthropic   = "anthropic"   // Anthropic Messages API (POST /v1/messages)
 	APIGemini      = "gemini"      // Google Gemini Interactions API (POST /v1beta/interactions)
 )
@@ -120,43 +120,29 @@ func (p Provider) WireAPI() string {
 }
 
 // WireAPISource resolves the wire protocol and reports where it came from. An explicit
-// "api" field wins (case-insensitive) and source is "explicit". When it is empty the base
+// "api" field wins (case-insensitive; LoadConfig has checked it) and source is "explicit". When it is empty the base
 // URL is inspected: a Google Generative Language URL selects Gemini, or Chat Completions when
 // it targets the /openai compat path (which only supports chat completions); an Anthropic base
 // URL or a /messages suffix selects Anthropic; a /chat/completions suffix selects Chat
 // Completions; each of these has source "url". Anything else defaults to the OpenAI Responses
-// API with source "default", the only case where the endpoint may be probed. Only the
-// canonical identifiers are accepted; there are no legacy aliases.
+// API with source "default", the only case where the endpoint may be probed.
 func (p Provider) WireAPISource() (api, source string) {
-	switch strings.ToLower(strings.TrimSpace(p.API)) {
-	case APIResponses:
-		return APIResponses, SourceExplicit
-	case APICompletions:
-		return APICompletions, SourceExplicit
-	case APIAnthropic:
-		return APIAnthropic, SourceExplicit
-	case APIGemini:
-		return APIGemini, SourceExplicit
-	case "":
-		trimmed := strings.ToLower(strings.TrimRight(p.BaseURL, "/"))
-		switch {
-		case strings.Contains(trimmed, geminiHost):
-			if strings.Contains(trimmed, "/openai") {
-				return APICompletions, SourceURL
-			}
-			return APIGemini, SourceURL
-		case strings.Contains(trimmed, "anthropic") || strings.HasSuffix(trimmed, "/messages"):
-			return APIAnthropic, SourceURL
-		case strings.HasSuffix(trimmed, "/chat/completions") || strings.HasSuffix(trimmed, "/completions"):
+	if api := strings.ToLower(strings.TrimSpace(p.API)); api != "" {
+		return api, SourceExplicit
+	}
+	trimmed := strings.ToLower(strings.TrimRight(p.BaseURL, "/"))
+	switch {
+	case strings.Contains(trimmed, geminiHost):
+		if strings.Contains(trimmed, "/openai") {
 			return APICompletions, SourceURL
 		}
-		return APIResponses, SourceDefault
-	default:
-		// Fallback for directly constructed Provider structs (e.g. in test suites).
-		// Production configurations loaded from disk are strictly validated by
-		// LoadConfig to reject any unrecognized API wire protocols.
-		return APIResponses, SourceExplicit
+		return APIGemini, SourceURL
+	case strings.Contains(trimmed, "anthropic") || strings.HasSuffix(trimmed, "/messages"):
+		return APIAnthropic, SourceURL
+	case strings.HasSuffix(trimmed, "/chat/completions") || strings.HasSuffix(trimmed, "/completions"):
+		return APICompletions, SourceURL
 	}
+	return APIResponses, SourceDefault
 }
 
 // Model is a model offered by a provider. ID is the name sent to the API and Name is an optional
@@ -165,7 +151,7 @@ type Model struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
 	// MaxOutputTokens caps the tokens the model may generate per response. Unset, Anthropic uses
-	// its default of 32000 and the other protocols send no limit.
+	// its default of 64000 and the other protocols send no limit.
 	MaxOutputTokens int `json:"maxOutputTokens,omitzero"`
 	// Effort sets how much reasoning the model spends: low, medium, high, xhigh or max. Unset
 	// means the provider default.
@@ -199,11 +185,11 @@ type ModelRef struct {
 	Model    string `json:"model"`
 }
 
-// DefaultSessionPath returns the path to the sessions file.
-// If HMJ_SESSIONS is explicitly set, it takes precedence.
-// Otherwise, it computes a deterministic project-scoped storage path under
-// ~/.hmj/projects/<project-slug>/sessions.json based on the current workspace root.
-func DefaultSessionPath() string {
+// DefaultSessionDir returns the session directory, which holds the conversations of the
+// project. If HMJ_SESSIONS is explicitly set, it takes precedence. Otherwise it is a
+// deterministic project-scoped directory, ~/.hmj/projects/<project-slug>, based on the current
+// workspace root.
+func DefaultSessionDir() string {
 	if path := os.Getenv("HMJ_SESSIONS"); path != "" {
 		return path
 	}
@@ -218,7 +204,7 @@ func DefaultSessionPath() string {
 
 	configPath := DefaultConfigPath()
 	dir := filepath.Dir(configPath)
-	return filepath.Join(dir, "projects", slug, "sessions.json")
+	return filepath.Join(dir, "projects", slug)
 }
 
 // findProjectRoot discovers the root of the project by checking for a .git entry
@@ -278,7 +264,8 @@ func DefaultConfigPath() string {
 // ErrEmptyConfig reports a config file that exists but holds nothing.
 var ErrEmptyConfig = errors.New("config file is empty")
 
-// LoadConfig reads and validates the config file at path.
+// LoadConfig reads and validates the config file at path. A key hmj does not know, such as a
+// misspelt or removed setting, is an error rather than ignored.
 func LoadConfig(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -292,7 +279,7 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(data, &cfg, json.RejectUnknownMembers(true)); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := cfg.validate(); err != nil {
@@ -355,17 +342,14 @@ func CreateStarterConfig(path string, template []byte) error {
 		return err
 	}
 	if fi, err := f.Stat(); err != nil || fi.Size() > 0 {
-		f.Close()
-		return cmp.Or(err, fs.ErrExist)
+		return errors.Join(cmp.Or(err, fs.ErrExist), f.Close())
 	}
 	// An empty file that already existed keeps its mode from before; the key goes in here.
 	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	if _, err := f.Write(template); err != nil {
-		f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	return f.Close()
 }
@@ -711,8 +695,7 @@ func writeFilePreservingMode(path string, data []byte) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op once renamed
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
+		return errors.Join(err, tmp.Close())
 	}
 	if err := tmp.Close(); err != nil {
 		return err

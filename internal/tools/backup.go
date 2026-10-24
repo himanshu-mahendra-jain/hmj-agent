@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"hmj-agent/internal/logging"
 	"os"
 	"path/filepath"
 	"slices"
@@ -81,7 +82,9 @@ func pruneDir(dir string, maxFiles int, maxBytes int64) {
 		}
 		total += info.Size()
 		if i >= maxFiles || total > maxBytes {
-			os.Remove(filepath.Join(dir, e.Name()))
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+				logging.L().Warn("old backup not removed", "file", e.Name(), "error", err.Error())
+			}
 		}
 	}
 }

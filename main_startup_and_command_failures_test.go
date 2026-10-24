@@ -40,7 +40,7 @@ func newRunEnv(t *testing.T) runEnv {
 	t.Cleanup(srv.Close)
 
 	root := t.TempDir()
-	e := runEnv{config: filepath.Join(root, "config.json"), sessions: filepath.Join(root, "sessions.json"), requests: &requests}
+	e := runEnv{config: filepath.Join(root, "config.json"), sessions: filepath.Join(root, "sessions"), requests: &requests}
 	cfg := fmt.Sprintf(`{"providers":{"prov1":{"baseUrl":%q,"api":"responses","apiKey":"k","models":[{"id":"m1"}]}}}`, srv.URL)
 	if err := os.WriteFile(e.config, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -101,12 +101,10 @@ func TestRunWarnsWhenLogsCannotBeOpened(t *testing.T) {
 // removed from the config switches to the config's default model, and that is saved.
 func TestRunReplacesAModelNoLongerConfigured(t *testing.T) {
 	e := newRunEnv(t)
-	saved := `{"activeId":"1","order":["1"],"counter":1,"defaultModel":{"provider":"gone","model":"old"},
-		"conversations":{"1":{"id":"1","name":"kept","model":{"provider":"gone","model":"old"},
-		"messages":[{"role":"system","content":"s"},{"role":"user","content":"earlier prompt"},{"role":"assistant","content":"earlier answer"}]}}}`
-	if err := os.WriteFile(e.sessions, []byte(saved), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeSessionDir(t, e.sessions, `{"activeId":"1","defaultModel":{"provider":"gone","model":"old"}}`, map[string]string{
+		"1": `{"id":"1","name":"kept","model":{"provider":"gone","model":"old"},
+		"messages":[{"role":"system","content":"s"},{"role":"user","content":"earlier prompt"},{"role":"assistant","content":"earlier answer"}]}`,
+	})
 
 	if code, stderr := runCapturing(t, nil, strings.NewReader("")); code != 0 {
 		t.Fatalf("exit code = %d; stderr %q", code, stderr)
@@ -182,16 +180,16 @@ func TestRunReportsFailedCommands(t *testing.T) {
 		want  string
 	}{
 		{name: "/new cannot save", input: "/new\n", want: "/new failed:", setup: func(t *testing.T, e runEnv) {
-			t.Setenv("HMJ_SESSIONS", filepath.Join(regularFile(t), "sessions.json"))
+			t.Setenv("HMJ_SESSIONS", filepath.Join(regularFile(t), "sessions"))
 		}},
 		{name: "/resume cannot save", args: []string{"--accessible"}, input: "/resume\n1\n", want: "/resume failed:", setup: func(t *testing.T, e runEnv) {
-			t.Setenv("HMJ_SESSIONS", filepath.Join(regularFile(t), "sessions.json"))
+			t.Setenv("HMJ_SESSIONS", filepath.Join(regularFile(t), "sessions"))
 		}},
 		{name: "/history cannot copy", args: []string{"--accessible"}, input: "hello\n/history\n1\n1\n", want: "/history failed: clipboard unavailable", setup: func(t *testing.T, e runEnv) {
 			t.Setenv("PATH", t.TempDir()) // no wl-copy, xclip or xsel; stdout is not a terminal
 		}},
 		{name: "/models cannot save", args: []string{"--accessible"}, input: "/models\n1\n", want: "/models failed:", setup: func(t *testing.T, e runEnv) {
-			t.Setenv("HMJ_SESSIONS", filepath.Join(regularFile(t), "sessions.json"))
+			t.Setenv("HMJ_SESSIONS", filepath.Join(regularFile(t), "sessions"))
 		}},
 	}
 	for _, tc := range cases {
@@ -231,7 +229,7 @@ func TestMenusClosedByEndOfInputAreNotFailures(t *testing.T) {
 func TestPromptModelFallsBackWhenModelRemoved(t *testing.T) {
 	a := newReloadApp(t, forcedFlags{})
 	defer a.cancel()
-	a.sm = session.NewSessionManager(config.ModelRef{Provider: "gone", Model: "old"})
+	a.sm = session.LoadSessionManager("", config.ModelRef{Provider: "gone", Model: "old"})
 
 	var conv *session.Conversation
 	captureStderr(t, func() { conv = a.promptModel() })
@@ -284,5 +282,52 @@ func TestRunHealthAnnouncesDetectedProtocol(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"api": "responses"`) && !strings.Contains(string(data), `"api":"responses"`) {
 		t.Errorf("config not updated: %s", data)
+	}
+}
+
+// TestPromptLineShowsEffort checks that the line before each prompt names the effort the
+// requests carry: the configured level, or default when none is set.
+func TestPromptLineShowsEffort(t *testing.T) {
+	a := newReloadApp(t, forcedFlags{})
+	defer a.cancel()
+	for effort, want := range map[string]string{"high": "[model: alpha/m1 · effort: high]\n", "": "[model: alpha/m1 · effort: default]\n"} {
+		p := a.cfg.Providers["alpha"]
+		p.API = config.APIAnthropic
+		p.Models = []config.Model{{ID: "m1", Effort: effort}}
+		a.cfg.Providers["alpha"] = p
+		a.sm = session.LoadSessionManager("", config.ModelRef{Provider: "alpha", Model: "m1"})
+
+		f, err := os.CreateTemp(t.TempDir(), "stdout")
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := os.Stdout
+		os.Stdout = f
+		a.promptModel()
+		os.Stdout = old
+		f.Close()
+		out, _ := os.ReadFile(f.Name())
+		if line, _, _ := strings.Cut(theme.StripANSI(string(out)), "\n"); line+"\n" != want {
+			t.Errorf("effort %q: prompt line %q, want %q", effort, line, want)
+		}
+	}
+}
+
+// writeSessionDir writes a session directory: state.json, when state is not empty, and each
+// conversation as conversations/<id>.json.
+func writeSessionDir(t *testing.T, dir, state string, conversations map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "conversations"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if state != "" {
+		if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(state), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, conv := range conversations {
+		if err := os.WriteFile(filepath.Join(dir, "conversations", id+".json"), []byte(conv), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

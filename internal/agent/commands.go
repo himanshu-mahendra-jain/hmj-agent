@@ -7,10 +7,13 @@ import (
 	"strconv"
 	"strings"
 
+	"hmj-agent/internal/chat"
 	"hmj-agent/internal/config"
+	"hmj-agent/internal/logging"
 	"hmj-agent/internal/session"
 	"hmj-agent/internal/terminal"
 	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/internal/tools"
 )
 
 // HandleNew creates and switches to a new conversation and clears the screen. Earlier
@@ -47,8 +50,11 @@ func HandleModels(cfg config.Config, sm *session.SessionManager, reader *bufio.R
 			defaultIdx = i
 		}
 		text := fmt.Sprintf("%s/%s", m.Provider, m.Model)
-		if _, modelObj, err := cfg.ResolveModel(m); err == nil && modelObj.Name != "" {
-			text = fmt.Sprintf("%s/%s (%s)", m.Provider, m.Model, modelObj.Name)
+		if p, modelObj, err := cfg.ResolveModel(m); err == nil {
+			if modelObj.Name != "" {
+				text = fmt.Sprintf("%s/%s (%s)", m.Provider, m.Model, modelObj.Name)
+			}
+			text += theme.ASCII(" · ") + "effort: " + chat.EffortLabel(p, modelObj)
 		}
 		items = append(items, terminal.SelectItem{
 			ID:       fmt.Sprintf("%s/%s", m.Provider, m.Model),
@@ -84,18 +90,24 @@ func HandleModels(cfg config.Config, sm *session.SessionManager, reader *bufio.R
 	return nil
 }
 
-// resumeItemLabel formats a conversation as its label in the resume selector.
-func resumeItemLabel(c *session.Conversation) string {
+// resumeItemLabel formats a conversation as its label in the resume selector, noting when
+// another hmj has it open.
+func resumeItemLabel(c *session.Conversation, openElsewhere bool) string {
 	msgStr := "messages"
 	if c.UserMessageCount() == 1 {
 		msgStr = "message"
 	}
-	return fmt.Sprintf("[%s] %s (%d user %s, model: %s/%s)", c.ID, c.Name, c.UserMessageCount(), msgStr, c.Model.Provider, c.Model.Model)
+	label := fmt.Sprintf("[%s] %s (%d user %s, model: %s/%s)", c.ID, c.Name, c.UserMessageCount(), msgStr, c.Model.Provider, c.Model.Model)
+	if openElsewhere {
+		label += " [open in another hmj]"
+	}
+	return label
 }
 
 // buildResumeItems converts the conversations into selector items and returns the
 // index of the active conversation (0 when none is active).
-func buildResumeItems(convs []*session.Conversation, activeID string) ([]terminal.SelectItem, int) {
+func buildResumeItems(convs []*session.Conversation, sm *session.SessionManager) ([]terminal.SelectItem, int) {
+	activeID := sm.ActiveID
 	defaultIdx := 0
 	var items []terminal.SelectItem
 	for i, c := range convs {
@@ -105,7 +117,7 @@ func buildResumeItems(convs []*session.Conversation, activeID string) ([]termina
 		}
 		items = append(items, terminal.SelectItem{
 			ID:       c.ID,
-			Text:     resumeItemLabel(c),
+			Text:     resumeItemLabel(c, sm.OpenElsewhere(c.ID)),
 			IsActive: isActive,
 		})
 	}
@@ -126,7 +138,7 @@ func resumeCallbacks(sm *session.SessionManager, actionMsgs *[]string) *terminal
 			}
 			*actionMsgs = append(*actionMsgs, fmt.Sprintf("renamed conversation to: %s", newName))
 			conv := sm.Conversations[item.ID]
-			return resumeItemLabel(conv), nil
+			return resumeItemLabel(conv, false), nil
 		},
 		OnDelete: func(item terminal.SelectItem) error {
 			convName := item.ID
@@ -169,7 +181,7 @@ func HandleResume(cfg config.Config, sm *session.SessionManager, reader *bufio.R
 		return nil
 	}
 
-	items, defaultIdx := buildResumeItems(convs, sm.ActiveID)
+	items, defaultIdx := buildResumeItems(convs, sm)
 
 	var actionMsgs []string
 	cb := resumeCallbacks(sm, &actionMsgs)
@@ -201,9 +213,39 @@ func HandleResume(cfg config.Config, sm *session.SessionManager, reader *bufio.R
 	return nil
 }
 
-// BannerShortcuts is the keyboard-hint line shown at startup.
-func BannerShortcuts() string {
-	return theme.Muted("shortcuts: Ctrl+N (new) | Ctrl+R (resume) | Ctrl+O (models) | Ctrl+Y (history) | /shortcuts | Esc (halt) | Ctrl+D (exit)")
+// HandleJobs runs /jobs: it lists the background jobs and, when some are running, offers to
+// stop one. A stopped job is told to the model with the user's next message.
+func HandleJobs(reader *bufio.Reader) error {
+	jobs := tools.Jobs.List()
+	if len(jobs) == 0 {
+		fmt.Println(theme.Muted("[no background jobs]"))
+		return nil
+	}
+	var running []terminal.SelectItem
+	for _, j := range jobs {
+		fmt.Println(theme.Info(theme.Sanitize(j.Text)))
+		if j.Running {
+			running = append(running, terminal.SelectItem{ID: strconv.Itoa(j.ID), Text: theme.Sanitize(j.Text)})
+		}
+	}
+	if len(running) == 0 {
+		return nil
+	}
+	chosen, confirmed, err := terminal.InteractiveSelect(
+		"stop a job (Enter stops it, Esc keeps them running)", running, 0, reader, nil,
+	)
+	if err != nil || !confirmed || chosen.ID == "" {
+		return err
+	}
+	id, err := strconv.Atoi(chosen.ID)
+	if err != nil {
+		return fmt.Errorf("job %q: %w", chosen.ID, err)
+	}
+	if err := tools.Jobs.StopForUser(id); err != nil {
+		return err
+	}
+	fmt.Println(theme.Muted(fmt.Sprintf("[job %d stopped; the model hears of it with your next message]", id)))
+	return nil
 }
 
 // ShortcutsTable builds the terminal table for shortcuts and slash commands. In
@@ -235,7 +277,9 @@ func defaultShortcutRows() [][]string {
 		{"`Ctrl+Y`", "`/history`", "Browse turns & copy prompt or AI output to clipboard"},
 		{"`↑` / `↓`", "—", "Cycle prompt history (recalls previous prompts, restores draft)"},
 		{"`Esc` / `Ctrl+C`", "—", "Halt running agent or tool execution"},
+		{"`Ctrl+B`", "—", "Move a running command to the background, so you can keep chatting"},
 		{"`Ctrl+D`", "—", "Exit HMJ Agent"},
+		{"—", "`/jobs`", "List background jobs and stop one"},
 		{"—", "`/health`", "Check health & latency of all configured providers and models"},
 		{"—", "`/shortcuts`", "Display this shortcuts & commands table"},
 	}
@@ -252,6 +296,7 @@ func accessibleShortcutRows() [][]string {
 		{"`Esc` / `Ctrl+C`", "—", "Halt running agent or tool execution"},
 		{"`Ctrl+D`", "—", "Exit HMJ Agent"},
 		{"—", "—", "End a line with `\\` to continue the prompt on the next line"},
+		{"—", "`/jobs`", "List background jobs and stop one"},
 		{"—", "`/health`", "Check health & latency of all configured providers and models"},
 		{"—", "`/shortcuts`", "Display this shortcuts & commands table"},
 	}
@@ -277,21 +322,63 @@ type Turn struct {
 	Index    int
 	Prompt   string
 	Response string
+	// Compacted marks a turn that a compaction replaced: it is kept for /history, but the
+	// model no longer sees it.
+	Compacted bool
+	// parts are the pieces Response joins, so the model's text can be shown rendered and the
+	// tool calls and results as written.
+	parts []turnPart
 }
 
-// ExtractTurns extracts user-assistant turns from a conversation.
-func ExtractTurns(conv *session.Conversation) []Turn {
-	if conv == nil {
-		return nil
+// turnPart is one piece of a turn's response: the model's text, or a tool call or result.
+type turnPart struct {
+	text  string
+	model bool
+}
+
+// viewText returns the response as "View full turn" shows it: the model's Markdown rendered,
+// tool calls and results as written.
+func (t *Turn) viewText() string {
+	if len(t.parts) == 0 {
+		return theme.Sanitize(t.Response)
 	}
+	pieces := make([]string, len(t.parts))
+	for i, p := range t.parts {
+		pieces[i] = theme.Sanitize(p.text)
+		if p.model {
+			pieces[i] = terminal.RenderMarkdown(pieces[i])
+		}
+	}
+	return strings.Join(pieces, "\n\n")
+}
+
+// HistoryTurns returns every turn of conv for /history: the turns compactions replaced, marked
+// Compacted, then the turns in the conversation. When the replaced turns cannot be read in full,
+// the turns read are returned with the error.
+func HistoryTurns(conv *session.Conversation) ([]Turn, error) {
+	earlier, err := conv.EarlierMessages()
+	turns := turnsOf(earlier)
+	for i := range turns {
+		turns[i].Compacted = true
+	}
+	for _, t := range turnsOf(conv.Messages) {
+		t.Index = len(turns) + 1
+		turns = append(turns, t)
+	}
+	return turns, err
+}
+
+// turnsOf extracts the user-assistant turns from msgs.
+func turnsOf(msgs []chat.Message) []Turn {
 	var turns []Turn
 	var curTurn *Turn
 	toolNames := make(map[string]string)
 
-	appendTurnResponse := func(text string) {
+	appendTurnResponse := func(text string, model bool) {
 		if curTurn == nil || text == "" {
 			return
 		}
+		curTurn.parts = append(curTurn.parts, turnPart{text, model})
 		if curTurn.Response != "" {
 			curTurn.Response += "\n\n" + text
 		} else {
@@ -299,7 +386,7 @@ func ExtractTurns(conv *session.Conversation) []Turn {
 		}
 	}
 
-	for _, m := range conv.Messages {
+	for _, m := range msgs {
 		switch m.Role {
 		case "user":
 			if curTurn != nil {
@@ -312,7 +399,7 @@ func ExtractTurns(conv *session.Conversation) []Turn {
 		case "assistant":
 			if curTurn != nil {
 				if m.Content != "" {
-					appendTurnResponse(m.Content)
+					appendTurnResponse(m.Content, true)
 				}
 				for _, tc := range m.ToolCalls {
 					toolNames[tc.ID] = tc.Function.Name
@@ -324,7 +411,7 @@ func ExtractTurns(conv *session.Conversation) []Turn {
 					if theme.Accessibility() {
 						glyph = "- "
 					}
-					appendTurnResponse(fmt.Sprintf("%s%s: %s", glyph, tc.Function.Name, args))
+					appendTurnResponse(fmt.Sprintf("%s%s: %s", glyph, tc.Function.Name, args), false)
 				}
 			}
 		case "tool":
@@ -335,9 +422,9 @@ func ExtractTurns(conv *session.Conversation) []Turn {
 				}
 				out := strings.TrimSpace(m.Content)
 				if theme.Accessibility() {
-					appendTurnResponse(resultBlock(tName, out))
+					appendTurnResponse(resultBlock(tName, out), false)
 				} else {
-					appendTurnResponse(fmt.Sprintf("│ %s: %s", tName, out))
+					appendTurnResponse(fmt.Sprintf("│ %s: %s", tName, out), false)
 				}
 			}
 		}
@@ -358,13 +445,18 @@ func turnSnippet(prompt string, limit int) string {
 	return snippet
 }
 
-// buildTurnItems converts the turns into selector items labelled "[i/n] snippet".
+// buildTurnItems converts the turns into selector items labelled "[i/n] snippet", with
+// "(compacted)" before the snippet of a turn a compaction replaced.
 func buildTurnItems(turns []Turn) []terminal.SelectItem {
 	var items []terminal.SelectItem
 	for _, t := range turns {
+		mark := ""
+		if t.Compacted {
+			mark = "(compacted) "
+		}
 		items = append(items, terminal.SelectItem{
 			ID:   strconv.Itoa(t.Index),
-			Text: fmt.Sprintf("[%d/%d] %s", t.Index, len(turns), turnSnippet(t.Prompt, 60)),
+			Text: fmt.Sprintf("[%d/%d] %s%s", t.Index, len(turns), mark, turnSnippet(t.Prompt, 60)),
 		})
 	}
 	return items
@@ -405,16 +497,21 @@ func runTurnAction(actionID string, turn *Turn, total int) error {
 	case "view":
 		fmt.Printf("\n%s %s\n", theme.Prompt("> you:"), theme.Text(turn.Prompt))
 		if turn.Response != "" {
-			fmt.Printf("\n%s\n\n", theme.Sanitize(turn.Response))
+			fmt.Printf("\n%s\n\n", turn.viewText())
 		}
 	}
 	return nil
 }
 
-// HandleHistory opens an interactive browser over conversation turns
-// allowing the user to scroll through prompts and copy either prompt or AI output.
+// HandleHistory opens an interactive browser over conversation turns, including those
+// compactions replaced, allowing the user to scroll through prompts and copy either prompt or AI
+// output.
 func HandleHistory(conv *session.Conversation, reader *bufio.Reader) error {
-	turns := ExtractTurns(conv)
+	turns, err := HistoryTurns(conv)
+	if err != nil {
+		logging.L().Warn("earlier turns not read", "error", err.Error())
+		fmt.Println(theme.Caution(fmt.Sprintf("[could not read all the turns before the compaction: %s]", theme.Sanitize(err.Error()))))
+	}
 	if len(turns) == 0 {
 		fmt.Println(theme.Muted("no prompt history in current conversation yet"))
 		return nil

@@ -2,7 +2,6 @@ package theme
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -10,19 +9,6 @@ import (
 // in every palette so a diff stays readable without colour.
 func AddGlyph() string { return Style("+", pal.MarkAdd...) }
 func DelGlyph() string { return Style("-", pal.MarkDel...) }
-
-// Num renders a gutter line number. Widths are applied to the plain digits
-// before styling so column alignment is identical with and without colour.
-func Num(n int, width int) string {
-	d := strconv.Itoa(n)
-	if len(d) < width {
-		d = strings.Repeat(" ", width-len(d)) + d
-	}
-	return Style(d, pal.LineNum...)
-}
-
-// AddedBlock paints whole added text on a subtle dark block.
-func AddedBlock(s string) string { return Style(s, pal.addedBlock...) }
 
 // RemovedBlock paints whole removed text on a solid red block.
 func RemovedBlock(s string) string { return Style(s, pal.removedBlock...) }
@@ -60,10 +46,6 @@ func renderRow(num, glyph, body, fallback string, mark []string, row rowStyle) s
 	return sgr(append(append([]string{}, row.bg...), row.num...)...) + cleanNum + " " +
 		sgr(mark...) + cleanGlyph + " " + open + restoredBody + "  " + "\x1b[" + resetParam + "m"
 }
-
-// CountAdd / CountDel render "+n" / "−n" change statistics.
-func CountAdd(n int) string { return Style("+"+strconv.Itoa(n), pal.GlyphAdd...) }
-func CountDel(n int) string { return Style(ASCII("−")+strconv.Itoa(n), pal.GlyphDel...) }
 
 // DiffHeader renders a diff title: path, faded separator, then stats.
 func DiffHeader(path, stats string) string {

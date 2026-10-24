@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json/v2"
@@ -26,6 +27,9 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// Images are pictures a tool result carries after its text, sent to providers that take
+	// them and replaced by a note elsewhere.
+	Images []Image `json:"images,omitempty"`
 	// Blocks are provider-opaque content blocks of an assistant message, kept in
 	// the order the model produced them. They must be replayed verbatim (for
 	// example Anthropic thinking signatures), so they are not rendered or edited.
@@ -63,13 +67,17 @@ type ToolCallFunction struct {
 type ToolDefinition struct {
 	Type     string             `json:"type"`
 	Function FunctionDefinition `json:"function"`
+	// StreamArguments asks a provider that holds a call's arguments back until they are
+	// complete to send them as the model writes them, unchecked, so the status line can show
+	// them growing. It is for tools whose arguments can be large; only Anthropic needs it.
+	StreamArguments bool `json:"-"`
 }
 
 // FunctionDefinition describes a callable function: its name, purpose and JSON Schema parameters.
 type FunctionDefinition struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  Schema `json:"parameters,omitempty"`
 }
 
 // TokenUsage reports token counts and timing for one model response. The timing and finish-reason
@@ -333,8 +341,13 @@ func (c *Client) streamChatOnce(
 	onReasoning func(string),
 	onDelta func(string),
 ) (Message, *TokenUsage, time.Duration, bool, error) {
-	// Detection logs its own outcome once; a failed detection still runs the turn as Responses.
-	api, _, _ := c.DetectWireAPI(ctx, providerName, provider)
+	// Detection logs its own outcome once. A detection that failed for want of auth still runs
+	// the turn as Responses, whose own request then reports the auth error; a cancelled one
+	// ends here.
+	api, _, err := c.DetectWireAPI(ctx, providerName, provider)
+	if err != nil && ctx.Err() != nil {
+		return Message{}, nil, 0, false, err
+	}
 	return c.streamChatWith(ctx, api, provider, model, messages, tools, onReasoning, onDelta)
 }
 
@@ -503,6 +516,13 @@ func (c *Client) doStream(ctx context.Context, req *http.Request, onEvent func(e
 // encodeRequestBody encodes a request body for a provider with map keys sorted. encoding/json/v2
 // otherwise walks maps in random order, so a tool schema or replayed tool-call arguments changed key
 // order from run to run, and the prompt the API caches changed with it.
+//
+// It writes to a buffer rather than calling json.Marshal, which builds the body in an encoder
+// buffer and then copies it: for a body of several megabytes that is a third less allocated.
 func encodeRequestBody(v any) ([]byte, error) {
-	return json.Marshal(v, json.Deterministic(true))
+	var buf bytes.Buffer
+	if err := json.MarshalWrite(&buf, v, json.Deterministic(true)); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

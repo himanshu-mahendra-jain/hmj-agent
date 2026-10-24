@@ -15,8 +15,11 @@ const maxOSC52Bytes = 100 * 1024
 // CopyToClipboard copies text to the system clipboard using OSC 52
 // ANSI escape sequences and native OS clipboard utilities. It returns an
 // error when no channel actually accepted the text, so callers never report
-// a false success.
+// a false success. Escape sequences and control characters are removed first:
+// pasted into a shell, an ESC [201~ in the model's text would end the bracketed
+// paste and run what follows as typed.
 func CopyToClipboard(text string) error {
+	text = theme.StripControls(text)
 	var (
 		osc52Sent  bool
 		osc52Skips []string

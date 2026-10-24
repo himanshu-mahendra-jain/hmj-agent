@@ -84,7 +84,7 @@ func TestPromptEmojiAndCombiningMarks(t *testing.T) {
 	}{
 		{"rocket emoji", "🚀x", 3},
 		{"combining acute accent", "café!", 5},
-		{"zero-width joiner", "a‍b", 2},
+		{"zero-width joiner", "a\u200db", 2},
 		{"variation selector", "❤️z", 2},
 	}
 	for _, tc := range tests {
@@ -320,7 +320,8 @@ func TestClearingAWrappedPromptErasesEveryRow(t *testing.T) {
 				row, col := v.Cursor()
 				return v.RowOf("abcdefghij") < 0 && v.lineText(row) == ">" && col == 2
 			})
-			if row, _ := v.Cursor(); v.RowOf("[model: mock/model-a]") != row-1 {
+			// At 30 columns the model line wraps; its last row ends in "default]".
+			if row, _ := v.Cursor(); v.RowOf("default]") != row-1 {
 				t.Errorf("the empty prompt is not right below the model line:\n%s", v.Dump())
 			}
 			// The redrawn prompt keeps its OSC 133 marks, like every other prompt drawn.

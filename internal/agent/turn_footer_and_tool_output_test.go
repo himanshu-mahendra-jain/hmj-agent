@@ -37,7 +37,7 @@ func TestTurnFooterReportsCacheAndTruncation(t *testing.T) {
 			t.Errorf("Run: %v", err)
 		}
 	})
-	thought, answer := strings.Index(out, "weighing options"), strings.Index(out, "partial answer")
+	thought, answer := strings.Index(out, "Thought for "), strings.Index(out, "partial answer")
 	if thought < 0 || answer < thought {
 		t.Fatalf("want the reasoning, then the answer:\n%q", out)
 	}
@@ -100,6 +100,24 @@ func TestTurnFooterCachedMatchesTheInput(t *testing.T) {
 	}
 	if strings.Contains(out, "4,900") {
 		t.Errorf("footer adds up the cached tokens of every step: %q", out)
+	}
+}
+
+// TestTurnFooterEndsWithTheTimeItWasDone checks that the footer's last part is the turn's
+// duration followed by the local time it ended.
+func TestTurnFooterEndsWithTheTimeItWasDone(t *testing.T) {
+	s := &turnStats{turnStart: time.Now().Add(-90 * time.Second), totalSteps: 2}
+	s.add(&chat.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15})
+	before := time.Now().Format("15:04")
+	out := captureOutput(t, s.printFooter)
+	after := time.Now().Format("15:04")
+
+	m := regexp.MustCompile(`1m3\ds total, done at (\d\d:\d\d)\]`).FindStringSubmatch(theme.StripANSI(out))
+	if m == nil {
+		t.Fatalf("footer lacks the duration and done time: %q", out)
+	}
+	if m[1] != before && m[1] != after {
+		t.Errorf("done at %s, want %s", m[1], before)
 	}
 }
 
@@ -197,7 +215,7 @@ func TestAccessibleDiffTruncationNoteIsASCII(t *testing.T) {
 		fmt.Fprintf(&newText, "line %d\n", i)
 	}
 	d := diff.Text("big.txt", "", newText.String(), diff.Options{MaxLines: 10})
-	out := captureOutput(t, func() { PrintDiff(d) })
+	out := captureOutput(t, func() { printDiff(d) })
 	if !strings.Contains(out, "more changed lines not shown") {
 		t.Fatalf("no truncation note:\n%s", out)
 	}
@@ -225,7 +243,7 @@ func TestReasoningBeforeToolCallIsClosed(t *testing.T) {
 			}
 		})
 	})
-	thought, call := strings.Index(out, "need a listing"), strings.Index(out, "teleport")
+	thought, call := strings.Index(out, "Thought for "), strings.Index(out, "teleport")
 	if thought < 0 || call < thought {
 		t.Fatalf("want the reasoning, then the tool call:\n%q", out)
 	}

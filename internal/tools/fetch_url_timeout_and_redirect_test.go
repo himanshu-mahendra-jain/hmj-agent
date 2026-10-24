@@ -34,6 +34,7 @@ func slowServer(t *testing.T, withHeaders bool) *httptest.Server {
 func TestFetchURLTimeoutSeconds(t *testing.T) {
 	for _, withHeaders := range []bool{false, true} {
 		t.Run(fmt.Sprintf("headers sent %v", withHeaders), func(t *testing.T) {
+			t.Parallel()
 			srv := slowServer(t, withHeaders)
 			start := time.Now()
 			_, err := (&FetchURLTool{}).Execute(context.Background(), `{"url":"`+srv.URL+`","timeout_seconds":1}`)

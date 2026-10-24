@@ -68,13 +68,14 @@ func TestStartProgressStopsGoroutine(t *testing.T) {
 }
 
 func TestStartAccessibleProgressOnlyInAccessibilityMode(t *testing.T) {
-	SetAccessibleReportInterval(5 * time.Millisecond)
-	defer SetAccessibleReportInterval(15 * time.Second)
+	prev := accessibleReportInterval
+	accessibleReportInterval = 5 * time.Millisecond
+	defer func() { accessibleReportInterval = prev }()
 
 	setAccessible(t)
 	var stop func()
 	out := captureStdout(t, func() {
-		stop = StartAccessibleProgress("edit_file")
+		stop = StartAccessibleProgress("edit_file", 0)
 		time.Sleep(30 * time.Millisecond)
 		stop()
 	})
@@ -84,7 +85,7 @@ func TestStartAccessibleProgressOnlyInAccessibilityMode(t *testing.T) {
 
 	theme.SetAccessibility(false)
 	out = captureStdout(t, func() {
-		stop = StartAccessibleProgress("edit_file")
+		stop = StartAccessibleProgress("edit_file", 0)
 		time.Sleep(30 * time.Millisecond)
 		stop()
 	})

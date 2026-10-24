@@ -9,12 +9,12 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"hmj-agent/internal/audit"
 	"hmj-agent/internal/chat"
 	"hmj-agent/internal/config"
-	"hmj-agent/internal/diff"
 	"hmj-agent/internal/logging"
 	"hmj-agent/internal/session"
 	"hmj-agent/internal/terminal"
@@ -29,6 +29,9 @@ type Runner struct {
 	Client   *chat.Client
 	Tools    map[string]tools.Tool
 	ToolDefs []chat.ToolDefinition
+	// progressEvery is how often accessibility mode reports a running tool; zero is the
+	// terminal's default.
+	progressEvery time.Duration
 }
 
 func NewRunner(client *chat.Client, cfg config.Config) *Runner {
@@ -54,7 +57,7 @@ func NewRunnerWithTools(client *chat.Client, cfg config.Config, toolList []tools
 			terminal.PauseActiveSpinner()
 			fmt.Fprintf(os.Stderr, "\n%s %s\n",
 				theme.Caution(header),
-				theme.Muted(err.Error()),
+				theme.Muted(theme.Sanitize(err.Error())),
 			)
 			terminal.ResumeActiveSpinner()
 		}
@@ -85,38 +88,81 @@ func NewRunnerWithTools(client *chat.Client, cfg config.Config, toolList []tools
 // Run executes one user turn: it records input, then streams model replies and runs any
 // requested tools until the model answers without tool calls, the turn is cancelled or an
 // error occurs.
+//
+// Background jobs of conv that ended since the model last heard go first in the user's message:
+// with input, or alone when input is empty, as when one woke the idle prompt. With neither
+// there is no turn.
 func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input string) error {
-	runCtx, cancel := context.WithCancel(ctx)
+	notices := tools.Jobs.TakeFinished(conv.ScratchDir)
+	if input == "" && len(notices) == 0 {
+		return nil
+	}
+	// Ctrl+B moves a running command to the background; a press while none runs is dropped
+	// before the next tool starts.
+	backgroundKeys := make(chan struct{}, 1)
+	runCtx, cancel := context.WithCancel(tools.WithBackgroundKey(tools.WithScratchDir(ctx, conv.ScratchDir), (<-chan struct{})(backgroundKeys)))
 	defer cancel()
-
-	stopHaltListener := terminal.StartHaltListener(cancel)
-	defer stopHaltListener()
-
-	r.beginTurn(conv, input)
-
-	fmt.Println()
 
 	// Immediate feedback that the prompt was accepted: a quiet spinner keeps
 	// the user informed while the request travels and until the first token
 	// (or tool activity) arrives. Essential when network latency or retry
 	// backoff delays time-to-first-token by seconds.
 	spinner := terminal.NewSpinner("thinking…")
+
+	// The key that halted the turn is reported with its footer, after what the step or tool
+	// it stopped printed on its way out; meanwhile the status line says it is stopping.
+	var haltedBy atomic.Pointer[string]
+	stopHaltListener := terminal.ListenForKeys(func(key string) {
+		haltedBy.Store(&key)
+		spinner.SetLabel("halting…")
+		spinner.SetDetail("")
+		cancel()
+	}, func() {
+		select {
+		case backgroundKeys <- struct{}{}:
+		default:
+		}
+	})
+	defer stopHaltListener()
+
+	r.beginTurn(conv, withJobNotices(notices, input))
+
+	// Every block the turn prints brings the blank line before it, so nothing is printed here
+	// that a tool call's own blank line would double.
+	if len(notices) > 0 {
+		fmt.Println()
+		printJobNotices(notices)
+	}
+
 	spinner.Start()
 	defer spinner.Stop()
 
 	stats := &turnStats{turnStart: time.Now()}
+	var prevRun toolRun // the turn's latest tool call and its result
+	// Every way out of the turn passes here, so it also marks when the conversation last changed.
+	endTurn := func() {
+		conv.UpdatedAt = time.Now()
+		spinner.Stop()
+		if key := haltedBy.Load(); key != nil {
+			fmt.Printf("\n%s\n", terminal.HaltNotice(*key))
+		}
+		stats.printFooter()
+	}
 	for step := 1; ; step++ {
 		stats.totalSteps = step
+		spinner.SetLabel("thinking…")
+		spinner.SetStatus(stats.liveStatus())
+		spinner.SetDetail("")
 
 		select {
 		case <-runCtx.Done():
-			stats.printFooter()
+			endTurn()
 			return nil
 		default:
 		}
 
 		stepStart := time.Now()
-		assistantMsg, usage, streamedAny, err := r.streamStep(runCtx, conv, spinner)
+		assistantMsg, usage, err := r.streamStep(runCtx, conv, spinner)
 		// A request over the model's context limit is sent again without the largest result
 		// of this step's tool calls, until it fits or no large result is left. A result that
 		// is removed stays removed even if the request still fails, so the saved conversation
@@ -127,14 +173,16 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 				break
 			}
 			fmt.Println(theme.Caution(removedResultNotice(name, size)))
-			assistantMsg, usage, streamedAny, err = r.streamStep(runCtx, conv, spinner)
+			assistantMsg, usage, err = r.streamStep(runCtx, conv, spinner)
 			logging.L().Warn("tool result removed", "name", name, "bytes", size, "retry_ok", err == nil)
 		}
 		stats.add(usage)
+		spinner.SetStatus(stats.liveStatus()) // this step's tools show its usage too
 
 		if err != nil {
+			// The steps before this one were paid for, so the footer shows them either way.
+			endTurn()
 			if errors.Is(runCtx.Err(), context.Canceled) {
-				stats.printFooter()
 				return nil
 			}
 			conv.Messages = append(conv.Messages, chat.Message{
@@ -148,15 +196,12 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 		recordPromptTokens(conv, usage)
 		conv.Messages = append(conv.Messages, assistantMsg)
 
-		if streamedAny {
-			fmt.Println()
-		}
 		if usage != nil && usage.FinishReason == "refusal" {
 			printRefusalNotice(usage.RefusalCategory)
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
-			stats.printFooter()
+			endTurn()
 			r.maybeGenerateTitle(runCtx, conv, input, assistantMsg.Content)
 			return nil
 		}
@@ -168,7 +213,7 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 				// Every tool call in the assistant message needs a matching tool result, or
 				// the provider rejects the next request. Answer this call and the rest.
 				appendCancelledToolResults(conv, assistantMsg.ToolCalls[i:])
-				stats.printFooter()
+				endTurn()
 				return nil
 			default:
 			}
@@ -176,13 +221,69 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 			// A step can carry tool calls with no streamed text at all, so
 			// the spinner may still be active when tool output begins.
 			spinner.Stop()
+			select {
+			case <-backgroundKeys:
+			default:
+			}
+			spinner.SetStatus(stats.liveStatus())
+			if movableToBackground(tc) {
+				spinner.SetStatus(strings.TrimPrefix(stats.liveStatus()+" · Ctrl+B: background", " · "))
+			}
+			output, images := r.runTool(runCtx, tc, spinner)
+			run := toolRun{tc.Function.Name, tc.Function.Arguments, output}
+			if len(images) == 0 && run.repeats(prevRun) {
+				output += repeatedCallNote
+			}
+			prevRun = run
+			// A background job that ended meanwhile is told with this result, so the model
+			// hears of it at its next step.
+			if notices := tools.Jobs.TakeFinished(conv.ScratchDir); len(notices) > 0 {
+				printJobNotices(notices)
+				output += "\n\n" + strings.Join(notices, "\n\n")
+			}
 			conv.Messages = append(conv.Messages, chat.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
-				Content:    r.runTool(runCtx, tc),
+				Content:    output,
+				Images:     images,
 			})
 		}
 	}
+}
+
+// withJobNotices puts the finish notices of background jobs before the user's input.
+func withJobNotices(notices []string, input string) string {
+	if len(notices) == 0 {
+		return input
+	}
+	text := strings.Join(notices, "\n\n")
+	if input != "" {
+		text += "\n\n" + input
+	}
+	return text
+}
+
+// printJobNotices shows the user the first line of each finish notice the model is given.
+func printJobNotices(notices []string) {
+	for _, n := range notices {
+		line, _, _ := strings.Cut(n, "\n")
+		fmt.Println(theme.Info(theme.Sanitize(line)))
+	}
+}
+
+// movableToBackground reports whether tc is a foreground run_command, which Ctrl+B can move
+// to the background.
+func movableToBackground(tc chat.ToolCall) bool {
+	if tc.Function.Name != "run_command" {
+		return false
+	}
+	var args struct {
+		Background bool `json:"background"`
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return true // the tool refuses arguments it cannot read, in the foreground
+	}
+	return !args.Background
 }
 
 // appendCancelledToolResults appends a placeholder tool result for each of calls, so the
@@ -215,13 +316,22 @@ func printRefusalNotice(category string) {
 	fmt.Println(theme.Caution(notice))
 }
 
-// beginTurn prepares conv for a new prompt: it names an untitled conversation and appends the
-// user's input. The system prompt is set only when the conversation has no user message yet, so a
-// later change to it never invalidates the cached prefix or the reasoning blocks. The history is
-// otherwise only appended to; compaction happens between turns (see StartCompaction).
+// beginTurn prepares conv for a new prompt: it creates its scratch directory, names an untitled
+// conversation and appends the user's input. The system prompt, which names the scratch
+// directory, is set only when the conversation has no user message yet, so a later change to it
+// never invalidates the cached prefix or the reasoning blocks. The history is otherwise only
+// appended to; compaction happens between turns (see StartCompaction).
 func (r *Runner) beginTurn(conv *session.Conversation, input string) {
+	scratch := conv.ScratchDir
+	if scratch != "" && os.MkdirAll(scratch, 0o700) != nil {
+		scratch = "" // not offered if it cannot be made
+	}
 	if conv.UserMessageCount() == 0 {
-		conv.SyncSystemPrompt(session.CurrentSystemPrompt())
+		prompt := session.CurrentSystemPrompt()
+		if scratch != "" {
+			prompt += session.ScratchPrompt(scratch)
+		}
+		conv.SyncSystemPrompt(prompt)
 	}
 	conv.MaybeAutoTitle(input)
 	conv.Messages = append(conv.Messages, chat.Message{
@@ -230,18 +340,76 @@ func (r *Runner) beginTurn(conv *session.Conversation, input string) {
 	})
 }
 
-// streamStep makes one model request, printing reasoning and answer text as it arrives.
-// It reports whether any answer text was streamed.
-func (r *Runner) streamStep(ctx context.Context, conv *session.Conversation, spinner *terminal.Spinner) (chat.Message, *chat.TokenUsage, bool, error) {
-	var streamedAny, streamedThnk bool
+// streamStep makes one model request, printing answer text as it arrives. While the model
+// reasons, the status line shows the sentence it is writing; once it is done, the transcript
+// keeps one line saying how long it thought. While it writes a tool call, the status line names
+// the tool and the size of its arguments so far.
+//
+// Each block the step prints, the line saying how long the model thought or a run of answer
+// text, has one blank line before it, as tool calls do. The text's own trailing line breaks are
+// dropped, and the step ends its last line.
+func (r *Runner) streamStep(ctx context.Context, conv *session.Conversation, spinner *terminal.Spinner) (chat.Message, *chat.TokenUsage, error) {
+	blockStart := func() { fmt.Println() }
+	var thinking *thoughtLine // set while the model reasons
+	// Reasoning is timed from the request, or from the answer text before it: a provider may
+	// send its summary of the reasoning only once the reasoning is done.
+	quietSince := time.Now()
+	endThoughts := func() {
+		if thinking != nil {
+			spinner.Stop()
+			spinner.SetDetail("")
+			blockStart()
+			printThoughtDuration(time.Since(thinking.start))
+			thinking = nil
+		}
+	}
 
 	// The spinner stays visible across the whole blocking StreamChat
 	// call (connect, retries, TTFT); the first streamed byte stops it.
 	spinner.Start()
 
-	tableStreamer := terminal.NewTableStreamer(func(s string) {
+	inText := false     // whether a run of answer text is being printed
+	atLineStart := true // whether the answer text printed so far ends a line
+	heldBreaks := ""    // the text's trailing line breaks, printed only if more text follows
+	mdStreamer := terminal.NewMarkdownStreamer(func(s string) {
 		spinner.Stop()
-		fmt.Print(s)
+		s = heldBreaks + s
+		body := strings.TrimRight(s, "\n")
+		heldBreaks = s[len(body):]
+		if body != "" {
+			fmt.Print(body)
+			atLineStart = false
+		}
+	})
+	// endText prints the answer text held back for its line break and ends its line, so that
+	// a status line or another block can follow it.
+	endText := func() {
+		mdStreamer.Flush()
+		if !atLineStart {
+			fmt.Println()
+			atLineStart = true
+		}
+		heldBreaks = ""
+		inText = false
+	}
+
+	// A tool call's arguments can take tens of seconds to write, a large write_file's above
+	// all, and nothing else would show meanwhile.
+	writing, written := "", 0 // the tool call being written and its arguments' size so far
+	ctx = chat.WithToolCallProgress(ctx, func(name string, argBytes int) {
+		if name != writing || argBytes < written { // a new call
+			endThoughts()
+			endText()
+			spinner.Stop() // restarts the elapsed time
+			writing = name
+			spinner.SetLabel("writing " + progressLine(name))
+			spinner.SetDetail("")
+			spinner.Start()
+		}
+		written = argBytes
+		if argBytes > 0 {
+			spinner.SetDetail(formatBytes(argBytes))
+		}
 	})
 
 	assistantMsg, usage, err := r.Client.StreamChat(
@@ -250,88 +418,99 @@ func (r *Runner) streamStep(ctx context.Context, conv *session.Conversation, spi
 		conv.Messages,
 		r.ToolDefs,
 		func(thought string) {
-			spinner.Stop()
-			if !streamedThnk {
-				thoughtLabel := "▾ Thought Process"
-				if theme.Accessibility() {
-					thoughtLabel = "Thought Process"
-				}
-				fmt.Print(theme.Thinking() + thoughtLabel + "\n  ")
-				streamedThnk = true
+			if thinking == nil {
+				// Answer text before the reasoning is printed first, so the status line and
+				// then the reasoning's line come after it.
+				endText()
+				thinking = &thoughtLine{start: quietSince}
+				spinner.SetLabel("thinking…")
+				spinner.Start()
 			}
-			fmt.Print(theme.Sanitize(thought))
+			spinner.SetDetail(thinking.add(thought))
 		},
 		func(delta string) {
 			// Stop on the first delta, not on the first flushed line:
-			// the table streamer buffers until a newline, which could
+			// the Markdown streamer buffers until a newline, which could
 			// keep the spinner running while tokens are already flowing.
+			endThoughts()
 			spinner.Stop()
-			if streamedThnk {
-				endThoughts()
-				streamedThnk = false
+			writing = ""
+			if !inText {
+				blockStart()
+				inText = true
 			}
-			tableStreamer.Write(theme.Sanitize(delta))
-			streamedAny = true
+			mdStreamer.Write(theme.Sanitize(delta))
+			quietSince = time.Now()
 		},
 	)
 
-	tableStreamer.Flush()
+	endText()
+	endThoughts()
 	spinner.Stop()
 
-	if streamedThnk {
-		endThoughts()
-	}
-
-	return assistantMsg, usage, streamedAny, err
-}
-
-// endThoughtsLabel is the line that closes the reasoning block in accessibility mode, so a screen
-// reader announces where the thoughts end and the answer begins.
-const endThoughtsLabel = "[END THOUGHTS]"
-
-// endThoughts closes the reasoning block. Accessibility mode prints the end label on its own line;
-// the normal view keeps a blank line.
-func endThoughts() {
-	if theme.Accessibility() {
-		fmt.Print(theme.Reset() + "\n" + endThoughtsLabel + "\n")
-		return
-	}
-	fmt.Print(theme.Reset() + "\n\n")
+	return assistantMsg, usage, err
 }
 
 // runTool prints a tool call, runs it and prints the result. It returns the output
-// that is sent back to the model.
-func (r *Runner) runTool(ctx context.Context, tc chat.ToolCall) string {
+// that is sent back to the model. While the tool runs, spinner shows its name, the time
+// it has taken and its latest output line.
+func (r *Runner) runTool(ctx context.Context, tc chat.ToolCall, spinner *terminal.Spinner) (string, []chat.Image) {
 	toolName := tc.Function.Name
 	toolArgs := tc.Function.Arguments
-	printExpandedToolCall(toolName, toolArgs)
+	quiet := quietTools[toolName]
+	if !quiet {
+		printExpandedToolCall(toolName, toolArgs)
+	}
 
 	tool, exists := r.Tools[toolName]
 	if !exists {
 		output := fmt.Sprintf("error: unknown tool %q", toolName)
 		printExpandedToolResult(theme.Sanitize(toolName), output)
-		return output
+		return output, nil
 	}
 
 	// Accessibility mode reports long-running tools on their own lines; the ticker
 	// is stopped before the result is printed, and the defer covers any other exit.
-	stopProgress := terminal.StartAccessibleProgress(toolName)
+	stopProgress := terminal.StartAccessibleProgress(toolName, r.progressEvery)
 	defer stopProgress()
+	if !theme.Accessibility() {
+		label := toolName
+		if quiet { // its call line is printed once it has finished
+			label = progressLine(theme.StripANSI(toolCallLine(toolName, toolArgs)))
+		}
+		spinner.SetLabel(label)
+		spinner.SetDetail("")
+		ctx = tools.WithProgress(ctx, func(line string) { spinner.SetDetail(progressLine(line)) })
+		spinner.Start()
+		defer spinner.Stop()
+	}
 	toolStart := time.Now()
 	res, execErr := execTool(ctx, tool, toolArgs)
 	toolDuration := time.Since(toolStart)
 	stopProgress()
+	spinner.Stop()
 
-	output := res
+	output := res.Text
 	if execErr != nil {
 		output = fmt.Sprintf("error: %v", execErr)
+		res.Images = nil
 	}
 	logTool(toolName, toolArgs, toolDuration, output, execErr)
 	audit.Record(toolName, toolArgs, toolDuration, len(output), execErr)
 	// The terminal shows what the model gets; the logs above keep the full size.
 	output = capToolResult(toolName, output)
-	printExpandedToolResult(toolName, output, toolDuration)
-	return output
+	if quiet {
+		printQuietToolResult(toolName, toolArgs, output, len(res.Images) > 0, toolDuration)
+	} else {
+		printExpandedToolResult(toolName, output, toolDuration)
+	}
+	return output, res.Images
+}
+
+// progressLine makes a tool's output line fit the status line: escape sequences and control
+// characters are removed, and runs of spaces and tabs become one space.
+func progressLine(line string) string {
+	return strings.Join(strings.Fields(theme.Sanitize(line)), " ")
 }
 
 // logTool records one tool execution in the diagnostic log. Arguments are truncated
@@ -370,7 +549,7 @@ func logStep(ref config.ModelRef, usage *chat.TokenUsage, d time.Duration) {
 
 // execTool runs tool and turns a panic into an error, so a faulty tool cannot end the turn.
 // The full stack goes to stderr for debugging; the model only receives the concise message.
-func execTool(ctx context.Context, tool tools.Tool, args string) (res string, err error) {
+func execTool(ctx context.Context, tool tools.Tool, args string) (res tools.Result, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
@@ -379,7 +558,11 @@ func execTool(ctx context.Context, tool tools.Tool, args string) (res string, er
 			err = fmt.Errorf("tool panicked: %v", r)
 		}
 	}()
-	return tool.Execute(ctx, args)
+	if it, ok := tool.(tools.ImageTool); ok {
+		return it.ExecuteWithImages(ctx, args)
+	}
+	text, err := tool.Execute(ctx, args)
+	return tools.Result{Text: text}, err
 }
 
 // turnStats accumulates token counts and timing across the model steps of one user turn.
@@ -428,6 +611,31 @@ func (s *turnStats) add(usage *chat.TokenUsage) {
 	}
 }
 
+// speed is the turn's generation speed in tokens per second: output tokens over the time spent
+// generating them, first tokens excluded. It is 0 before any output.
+func (s *turnStats) speed() float64 {
+	if s.sumGenDuration <= 0 || s.sumCompletion <= 0 {
+		return 0
+	}
+	return float64(s.sumCompletion) / s.sumGenDuration.Seconds()
+}
+
+// liveStatus is the turn so far for the status line while the model works: the step, the
+// latest prompt's size, the output and its speed. It is empty before any step reports usage.
+func (s *turnStats) liveStatus() string {
+	var parts []string
+	if s.totalSteps > 1 {
+		parts = append(parts, fmt.Sprintf("step %d", s.totalSteps))
+	}
+	if s.hasUsage {
+		parts = append(parts, FormatCompactNumber(s.lastPromptTokens)+" in", FormatCompactNumber(s.sumCompletion)+" out")
+		if speed := s.speed(); speed > 0 {
+			parts = append(parts, fmt.Sprintf("%.0f tokens/s", speed))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 // printFooter prints the token and timing summary for the turn. It prints nothing when no
 // step reported usage.
 func (s *turnStats) printFooter() {
@@ -455,17 +663,18 @@ func (s *turnStats) printFooter() {
 
 	// Generation speed (tokens per second)
 	var speedStr string
-	if s.sumGenDuration > 0 && s.sumCompletion > 0 {
-		speed := float64(s.sumCompletion) / s.sumGenDuration.Seconds()
+	if speed := s.speed(); speed > 0 {
 		speedStr = fmt.Sprintf("%.1f tokens/s", speed)
 	}
 
-	// Total time and time to first token
-	totalDuration := time.Since(s.turnStart)
-	timeStr := fmt.Sprintf("%s total", FormatDuration(totalDuration))
+	// Total time and time to first token, then the local time the turn ended, so a turn
+	// left running can be read on return as done and when.
+	end := time.Now()
+	timeStr := fmt.Sprintf("%s total", FormatDuration(end.Sub(s.turnStart)))
 	if s.lastTTFT > 0 && s.totalSteps <= 1 {
 		timeStr += fmt.Sprintf(" (%s to first token)", FormatDuration(s.lastTTFT))
 	}
+	timeStr += ", done at " + end.Format("15:04")
 
 	footerParts := []string{inputStr, outputStr, totalStr}
 	if speedStr != "" {
@@ -488,332 +697,16 @@ func (s *turnStats) printFooter() {
 	}
 }
 
-// PrintConversationHistory prints the transcript of a resumed conversation. A compaction is shown
-// as a notice, followed by its summary when the provider's summary can be read.
-func PrintConversationHistory(conv *session.Conversation) {
-	toolNames := make(map[string]string)
-	for _, m := range conv.Messages {
-		for _, tc := range m.ToolCalls {
-			toolNames[tc.ID] = tc.Function.Name
-		}
-	}
-
-	var printedAny bool
-	var lastRole string
-	for _, m := range conv.Messages {
-		switch m.Role {
-		case "system":
-			continue
-		case "user":
-			if lastRole != "" && lastRole != "user" {
-				fmt.Println()
-			}
-			fmt.Printf("%s %s %s\n", theme.Prompt(">"), theme.User("you:"), theme.Text(theme.Sanitize(m.Content)))
-			lastRole = "user"
-			printedAny = true
-		case "assistant":
-			if b := m.CompactionBlock(); b != nil {
-				fmt.Println(theme.Muted("[the earlier conversation was compacted]"))
-				if summary := b.ReadableSummary(); summary != "" {
-					fmt.Printf("\n%s\n", theme.Muted(theme.Sanitize(summary)))
-				}
-				lastRole = "assistant"
-				printedAny = true
-				continue
-			}
-			if len(m.ToolCalls) > 0 {
-				for _, tc := range m.ToolCalls {
-					printExpandedToolCall(tc.Function.Name, tc.Function.Arguments)
-				}
-			}
-			if m.Content != "" {
-				fmt.Printf("\n%s\n", theme.Sanitize(m.Content))
-			}
-			lastRole = "assistant"
-			printedAny = true
-		case "tool":
-			tName := toolNames[m.ToolCallID]
-			printExpandedToolResult(tName, m.Content)
-			lastRole = "tool"
-			printedAny = true
-		}
-	}
-	if printedAny {
-		fmt.Println()
-	}
-}
-
-func printExpandedToolCall(name, argsJSON string) {
-	// Every displayed field comes from the model, so escape sequences are stripped
-	// before printing: a command must not be able to redraw itself as something else.
-	badge := theme.ToolBadge(theme.Sanitize(name))
-	var raw map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
-		fmt.Printf("\n%s %s %s\n", badge, theme.Muted("(unparseable arguments)"), theme.Muted(theme.Sanitize(argsJSON)))
-		return
-	}
-
-	// Display-only extraction: missing or non-string argument fields render as
-	// empty strings in the transcript; the actual tool execution below
-	// re-parses args strictly and reports real errors.
-	get := func(key string) string {
-		s, ok := raw[key].(string)
-		if !ok {
-			return ""
-		}
-		return s
-	}
-	show := func(key string) string { return theme.Sanitize(get(key)) }
-
-	switch name {
-	case "read_file":
-		path := show("path")
-		if off, hasOff := raw["offset"]; hasOff {
-			fmt.Printf("\n%s %s %s\n", badge, theme.FilePath(path), theme.Muted(fmt.Sprintf("(offset: %s)", theme.Sanitize(fmt.Sprint(off)))))
-		} else {
-			fmt.Printf("\n%s %s\n", badge, theme.FilePath(path))
-		}
-
-	case "write_file":
-		path, content := show("path"), get("content")
-		fmt.Printf("\n%s %s %s\n", badge, theme.FilePath(path), theme.Muted(fmt.Sprintf("(%d bytes)", len(content))))
-
-	case "edit_file":
-		printEditFileCall(get("path"), get("old_string"), get("new_string"))
-
-	case "list_files":
-		path := show("path")
-		if path == "" {
-			path = "."
-		}
-		fmt.Printf("\n%s %s\n", badge, theme.FilePath(path))
-
-	case "run_command":
-		fmt.Printf("\n%s %s\n", badge, theme.Info(show("command")))
-
-	case "web_search":
-		fmt.Printf("\n%s %s\n", badge, theme.Info(show("query")))
-
-	case "fetch_url":
-		fmt.Printf("\n%s %s\n", badge, theme.Info(show("url")))
-
-	default:
-		fmt.Printf("\n%s %s\n", badge, theme.Muted(theme.Sanitize(argsJSON)))
-	}
-}
-
-// printEditFileCall renders an edit_file tool call as a real line-numbered diff
-// with word-level highlighting. When the old text cannot be located in the
-// file (or the call is a creation), it falls back to simple minus/plus blocks
-// so the user always sees what will change.
-func printEditFileCall(path, oldStr, newStr string) {
-	fmt.Printf("\n%s %s\n", theme.ToolBadge("edit_file"), theme.FilePath(theme.Sanitize(path)))
-	if oldStr == "" && newStr == "" {
-		return
-	}
-
-	oldText, haveOld := readFileForDiff(path)
-	var d *diff.File
-	if haveOld && oldStr != "" && strings.Contains(oldText, oldStr) {
-		newText := strings.Replace(oldText, oldStr, newStr, 1)
-		d = diff.Text(path, oldText, newText, diff.Options{Inline: true, MaxLines: maxDiffRows})
-	} else if !haveOld && oldStr == "" {
-		// New file creation: show every line as an addition.
-		d = diff.Text(path, "", EnsureTrailingNewline(newStr), diff.Options{Inline: false, MaxLines: maxDiffRows})
-	}
-
-	if d != nil && !d.Empty() {
-		printDiff(d)
-		return
-	}
-
-	// Fallback: naive minus/plus block (unreadable path, or not-found old_string).
-	if oldStr != "" {
-		for l := range strings.SplitSeq(strings.TrimRight(oldStr, "\n"), "\n") {
-			fmt.Printf("  %s %s\n", theme.DelGlyph(), theme.RemovedBlock(" "+theme.Sanitize(l)+" "))
-		}
-	}
-	if newStr != "" {
-		for l := range strings.SplitSeq(strings.TrimRight(newStr, "\n"), "\n") {
-			fmt.Printf("  %s %s\n", theme.AddGlyph(), theme.Added(theme.Sanitize(l)))
-		}
-	}
-}
-
-// maxDiffRows caps how many diff rows one tool call prints inline.
-const maxDiffRows = 120
-
-// readFileForDiff reads a file for diffing, returning ok=false when it does not
-// exist or cannot be read (never an error: display must stay best-effort).
-func readFileForDiff(path string) (string, bool) {
-	if path == "" {
-		return "", false
-	}
-	absPath, err := tools.ResolvePath(path)
-	if err != nil {
-		return "", false
-	}
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return "", false
-	}
-	return string(data), true
-}
-
-// EnsureTrailingNewline appends a newline to s unless s is empty or already
-// ends with one. Exported for testing.
-func EnsureTrailingNewline(s string) string {
-	if s == "" || strings.HasSuffix(s, "\n") {
-		return s
-	}
-	return s + "\n"
-}
-
-// printDiff renders a computed diff with the theme palette.
-func printDiff(d *diff.File) {
-	paint := func(s string, kind diff.SegmentStyle) string {
-		// Diff text is file content or model output: strip escape sequences so a
-		// line cannot drive the terminal (cursor moves, OSC 52 clipboard writes).
-		s = theme.Sanitize(s)
-		switch kind {
-		case diff.StyleLineNum:
-			return theme.Faint(s)
-		case diff.StyleGlyphAdd:
-			return theme.AddGlyph()
-		case diff.StyleGlyphDel:
-			return theme.DelGlyph()
-		case diff.StyleTextAdd:
-			return s
-		case diff.StyleMarkAdd:
-			return theme.Mark(s)
-		case diff.StyleTextDel:
-			return s
-		case diff.StyleMarkDel:
-			return theme.Mark(s)
-		case diff.StyleRule, diff.StyleFaint:
-			return theme.Faint(s)
-		case diff.StyleAccent:
-			return theme.Accent(s)
-		case diff.StylePath:
-			return theme.FilePath(s)
-		default:
-			// Context lines: pure white text
-			return theme.BrightWhite(s)
-		}
-	}
-
-	// Single clean diff header with 2-space indent (DiffHeader gates the
-	// separator glyph for accessibility mode).
-	fmt.Printf("  %s\n", theme.DiffHeader(theme.Sanitize(d.Path), theme.FormatDiffStats(d.Added, d.Removed)))
-
-	for i, row := range d.Render(paint) {
-		if i == 0 {
-			// Skip the redundant header row emitted by d.Render
-			continue
-		}
-		if strings.Contains(row.Raw, "@@") {
-			continue
-		}
-		if row.Kind == diff.Del {
-			fmt.Printf("  %s\n", theme.RemovedLine(row.Number, row.Glyph, row.Body))
-		} else if row.Kind == diff.Add {
-			fmt.Printf("  %s\n", theme.AddedLine(row.Number, row.Glyph, row.Body))
-		} else {
-			if row.Notice && row.Body == "" {
-				// Hunk separator: its "···" lives in Raw, not Body.
-				fmt.Printf("  %s\n", theme.Faint(theme.ASCII(row.Raw)))
-				continue
-			}
-			cleanNum := strings.TrimRight(theme.StripANSI(row.Number), " ")
-			cleanBody := strings.TrimRight(theme.StripANSI(row.Body), " \t\r\n")
-			if row.Notice {
-				cleanBody = theme.ASCII(cleanBody)
-			}
-			fmt.Printf("  %s   %s\n", theme.Faint(cleanNum), theme.BrightWhite(cleanBody))
-		}
-	}
-}
-
-// PrintDiff renders a computed diff with the theme palette. Exported for testing.
-func PrintDiff(d *diff.File) {
-	printDiff(d)
-}
-
-// PrintEditFileCall renders an edit_file tool call as a real line-numbered diff. Exported for testing.
-func PrintEditFileCall(path, oldStr, newStr string) {
-	printEditFileCall(path, oldStr, newStr)
-}
-
-func printExpandedToolResult(toolName string, output string, duration ...time.Duration) {
-	output = strings.TrimRight(output, "\r\n")
-	var durStr string
-	if len(duration) > 0 && duration[0] > 0 {
-		durStr = theme.Muted(fmt.Sprintf("(%s)", FormatDuration(duration[0])))
-	}
-
-	if output == "" {
-		if durStr != "" {
-			fmt.Printf("  %s\n", durStr)
-		}
-		return
-	}
-
-	if strings.HasPrefix(output, "error:") {
-		fmt.Fprintf(os.Stderr, "  %s\n", theme.Danger(theme.Sanitize(output)))
-		if durStr != "" {
-			fmt.Printf("  %s\n", durStr)
-		}
-		return
-	}
-
-	if toolName == "read_file" {
-		lineCount := strings.Count(output, "\n") + 1
-		lineStr := fmt.Sprintf("(%d lines)", lineCount)
-		if output == "[empty file]" {
-			lineStr = "(empty file)"
-		}
-		if durStr != "" {
-			fmt.Printf("  %s %s %s\n", theme.OK("read"), theme.Muted(lineStr), durStr)
-		} else {
-			fmt.Printf("  %s %s\n", theme.OK("read"), theme.Muted(lineStr))
-		}
-		return
-	}
-
-	if theme.Accessibility() {
-		fmt.Println(resultBlock(toolName, output))
-	} else {
-		for l := range strings.SplitSeq(output, "\n") {
-			fmt.Printf("  %s %s\n", theme.Faint("│"), theme.Sanitize(l))
-		}
-	}
-	if durStr != "" {
-		fmt.Printf("  %s\n", durStr)
-	}
-}
-
-// resultBlock frames a tool result for accessibility mode: a [RESULT name] header, the
-// output indented by two spaces with no gutter, and an [END RESULT] footer. Without a name
-// the header is [OUTPUT].
-func resultBlock(name, output string) string {
-	header := "[OUTPUT]"
-	if name != "" {
-		header = "[RESULT " + name + "]"
-	}
-	var sb strings.Builder
-	sb.WriteString(header + "\n")
-	for l := range strings.SplitSeq(output, "\n") {
-		sb.WriteString("  " + theme.Sanitize(l) + "\n")
-	}
-	sb.WriteString("[END RESULT]")
-	return sb.String()
-}
-
 func FormatDuration(d time.Duration) string {
-	if d < time.Second {
+	switch {
+	case d < time.Second:
 		return fmt.Sprintf("%dms", d.Milliseconds())
+	case d < time.Minute:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	default:
+		// As the status line counts it: a 2h20m turn read as 8400.0s.
+		return terminal.FormatElapsed(int(d.Round(time.Second).Seconds()))
 	}
-	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
 func FormatNumber(n int) string {
@@ -836,6 +729,20 @@ func FormatNumber(n int) string {
 		}
 	}
 	return result.String()
+}
+
+// FormatCompactNumber writes n for a narrow status line, rounded down: 950, 9.5K, 412K or 1.2M.
+func FormatCompactNumber(n int) string {
+	switch {
+	case n < 1000:
+		return strconv.Itoa(n)
+	case n < 10_000:
+		return fmt.Sprintf("%d.%dK", n/1000, n%1000/100)
+	case n < 1_000_000:
+		return fmt.Sprintf("%dK", n/1000)
+	default:
+		return fmt.Sprintf("%d.%dM", n/1_000_000, n%1_000_000/100_000)
+	}
 }
 
 // ProtocolDetectedNotice says which protocol a provider was found to speak and whether the

@@ -16,31 +16,21 @@ func Faint(s string) string       { return Style(s, pal.Faint...) }
 func Prompt(s string) string      { return Style(s, pal.Prompt...) }
 func User(s string) string        { return Style(s, pal.User...) }
 func Accent(s string) string      { return Style(s, pal.Accent...) }
-func Tool(s string) string        { return Style(s, pal.Tool...) }
 func FilePath(s string) string    { return Style(s, pal.FilePath...) }
 func Added(s string) string       { return Style(s, pal.Added...) }
 func Removed(s string) string     { return Style(s, pal.Removed...) }
-func Modified(s string) string    { return Style(s, pal.Modified...) }
 func Info(s string) string        { return Style(s, pal.Info...) }
 func Warn(s string) string        { return Style(s, pal.Warn...) }
-func Error(s string) string       { return Style(s, pal.Error...) }
-func Highlight(s string) string   { return Style(s, pal.Highlight...) }
 func Mark(s string) string        { return Style(s, pal.SelBG...) }
 func Bold(s string) string        { return Style(s, paramBold) }
 func Text(s string) string        { return Style(s, pal.Text...) }
 func BrightWhite(s string) string { return Style(s, pal.Text...) }
-
-func Link(url string) string     { return Style(url, pal.Link...) }
-func AccentIcon(s string) string { return Style(ASCII("★ ")+s, pal.Accent...) }
 
 // FooterJoin renders the dim " | " separator used between status fields.
 func FooterJoin() string { return Style(" | ", pal.Faint...) }
 
 // Cached is the muted-green treatment for "N cached" in the token footer.
 func Cached(s string) string { return Style(s, pal.GlyphAdd...) }
-
-// FooterDim wraps a whole footer line in muted chrome.
-func FooterDim(s string) string { return Style(s, pal.Muted...) }
 
 // Steps renders "(n steps)".
 func Steps(n int) string { return Muted(fmt.Sprintf("(%d steps)", n)) }
@@ -57,4 +47,33 @@ func Rule(width int) string {
 		return Faint(strings.Repeat("-", width))
 	}
 	return Faint(strings.Repeat("─", width))
+}
+
+// MarkdownStyle is the set of styles a run of the model's Markdown text is shown in.
+type MarkdownStyle uint8
+
+const (
+	MarkdownBold MarkdownStyle = 1 << iota
+	MarkdownItalic
+	MarkdownCode
+	MarkdownHeading
+)
+
+// Markdown styles one run of the model's Markdown text. Every style the run is in is set in one
+// sequence, so a run inside another, such as code in bold, keeps the outer style.
+func Markdown(s string, st MarkdownStyle) string {
+	var codes []string
+	if st&MarkdownHeading != 0 {
+		codes = append(codes, pal.Title...)
+	}
+	if st&MarkdownBold != 0 {
+		codes = append(codes, paramBold)
+	}
+	if st&MarkdownItalic != 0 {
+		codes = append(codes, paramItalic)
+	}
+	if st&MarkdownCode != 0 {
+		codes = append(codes, pal.Accent...)
+	}
+	return Style(s, codes...)
 }

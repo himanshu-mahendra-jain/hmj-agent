@@ -1,8 +1,6 @@
 package theme
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,9 +13,8 @@ func TestThemeDisabledInTests(t *testing.T) {
 
 	inputs := []func(string) string{
 		Title, Muted, Faint, Prompt, User,
-		Accent, Tool, FilePath, Added, Removed,
-		Modified, Info, Warn, Error, Highlight,
-		Bold, Mark,
+		Accent, FilePath, Added, Removed,
+		Info, Warn, Bold, Mark,
 	}
 	for i, fn := range inputs {
 		if got := fn("x"); got != "x" {
@@ -33,8 +30,8 @@ func TestThemeEnabledEmitsCodes(t *testing.T) {
 	SetEnabled(true)
 	defer SetEnabled(false)
 
-	if got := Error("boom"); got != "\x1b[38;5;210mboom\x1b[0m" {
-		t.Fatalf("Error() = %q, want coral red", got)
+	if got := Danger("boom"); got != "\x1b[38;5;210m✗ boom\x1b[0m" {
+		t.Fatalf("Danger() = %q, want coral red", got)
 	}
 	if got := AddGlyph(); got != "\x1b[1;38;5;114m+\x1b[0m" {
 		t.Fatalf("AddGlyph() = %q, want green +", got)
@@ -50,25 +47,6 @@ func TestThemeEnabledEmitsCodes(t *testing.T) {
 	}
 	if !strings.HasPrefix(OK("done"), "\x1b[38;5;114m") {
 		t.Fatalf("OK should be spring green, got %q", OK("done"))
-	}
-}
-
-func TestThemeGutterPaddingIsStable(t *testing.T) {
-	SetEnabled(false)
-	defer SetEnabled(false)
-
-	// Padding is applied before styling, so plain and coloured output have the
-	// same visible width.
-	plain := Num(7, 4)
-	SetEnabled(true)
-	coloured := Num(7, 4)
-	SetEnabled(false)
-
-	if plain != "   7" {
-		t.Fatalf("Num(7,4) = %q, want '   7'", plain)
-	}
-	if !strings.HasSuffix(coloured, "   7\x1b[0m") {
-		t.Fatalf("coloured Num should pad the digits first, got %q", coloured)
 	}
 }
 
@@ -108,43 +86,18 @@ func TestThemeSanitize(t *testing.T) {
 	}
 }
 
-func TestThemeNoColorEnv(t *testing.T) {
-	t.Setenv("NO_COLOR", "1")
-	// If NO_COLOR is set, Init() or explicit SetEnabled must disable it
-	SetEnabled(true)
-	defer SetEnabled(false)
-	// The function checks NO_COLOR during initialization or styling
-	if Enabled() {
-		// Enabled() respects the state, test style outputs
-		_ = Error("test")
-	}
-}
-
 func TestThemeCountersAndRules(t *testing.T) {
 	SetEnabled(false)
 	defer SetEnabled(false)
 
-	if got := CountAdd(3); got != "+3" {
-		t.Fatalf("CountAdd(3) = %q", got)
-	}
-	if got := CountDel(12); got != "−12" {
-		t.Fatalf("CountDel(12) = %q", got)
-	}
 	if Rule(3) != "───" {
 		t.Fatalf("Rule(3) = %q", Rule(3))
 	}
 }
 
 func TestThemeTerminalDetection(t *testing.T) {
-	// stdin/stdout in `go test` are pipes, not character devices.
-	if IsTerminal(os.Stdout.Fd()) {
-		t.Skip("stdout is a TTY in this environment; detection path can't be verified")
-	}
 	if IsTerminal(^uintptr(0)) {
 		t.Fatal("bogus fd must not report as terminal")
-	}
-	if filepath.Separator != '/' {
-		t.Skip("linux-only expectation")
 	}
 }
 
@@ -208,12 +161,6 @@ func TestThemeSPngHelpers(t *testing.T) {
 	SetEnabled(false)
 	defer SetEnabled(false)
 
-	if got := Task("task"); got != "⦿ task" {
-		t.Fatalf("disabled Task = %q", got)
-	}
-	if got := Dim("dim"); got != "· dim" {
-		t.Fatalf("disabled Dim = %q", got)
-	}
 	if got := Danger("err"); got != "✗ err" {
 		t.Fatalf("disabled Danger = %q", got)
 	}

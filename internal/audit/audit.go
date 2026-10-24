@@ -47,7 +47,9 @@ func Init(p, version string) (closeFn func() error, err error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if file != nil {
-		file.Close()
+		if err := file.Close(); err != nil {
+			logging.L().Warn("audit log close failed", "path", path, "error", err.Error())
+		}
 		file = nil
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
@@ -58,7 +60,10 @@ func Init(p, version string) (closeFn func() error, err error) {
 		return nil, err
 	}
 	path, file = p, f
-	dir, _ := os.Getwd()
+	dir, err := os.Getwd()
+	if err != nil {
+		dir = "unknown: " + err.Error()
+	}
 	writeLocked(Entry{Event: "start", Dir: dir, Version: version})
 	return func() error {
 		mu.Lock()
@@ -110,7 +115,9 @@ func writeLocked(e Entry) {
 }
 
 func rotateLocked() {
-	file.Close()
+	if err := file.Close(); err != nil {
+		logging.L().Warn("audit log close failed", "path", path, "error", err.Error())
+	}
 	if err := os.Rename(path, path+".1"); err != nil {
 		logging.L().Warn("audit log rotation failed", "path", path, "error", err.Error())
 	}

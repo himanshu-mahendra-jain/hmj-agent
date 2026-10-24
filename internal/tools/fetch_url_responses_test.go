@@ -41,6 +41,11 @@ func TestFetchURLResponses(t *testing.T) {
 		}
 	}))
 	defer manyLines.Close()
+	oversized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "first line\n", strings.Repeat("x", MaxFetchBodyBytes))
+	}))
+	defer oversized.Close()
 	brokenError := shortBodyServer(t, "500 Internal Server Error")
 	brokenOK := shortBodyServer(t, "200 OK")
 
@@ -55,6 +60,7 @@ func TestFetchURLResponses(t *testing.T) {
 		{name: "status error names the status once", args: `{"url":"` + notFound.URL + `/x"}`, want: "[HTTP 404 Not Found for " + notFound.URL + "/x]", exactOut: true},
 		{name: "error body cut short", args: `{"url":"` + brokenError.URL + `"}`, want: "[HTTP 500 Internal Server Error for " + brokenError.URL + "; response drain failed: unexpected EOF]", exactOut: true},
 		{name: "success body cut short", args: `{"url":"` + brokenOK.URL + `"}`, wantErr: "failed to read response"},
+		{name: "body over the cap is cut with a note", args: `{"url":"` + oversized.URL + `"}`, want: "[the response is over 16.0 MB and was cut there, so the end of the page is missing]\n\nfirst line\n"},
 		{name: "max_lines capped at 1000", args: `{"url":"` + manyLines.URL + `","max_lines":5000}`, want: "[truncated to 1000 lines of 1500, 13 KB in all] ...", wantNot: "line 1000\n"},
 	}
 	for _, tc := range tests {

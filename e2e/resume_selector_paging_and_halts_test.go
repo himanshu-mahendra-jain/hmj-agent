@@ -1,9 +1,10 @@
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func topics(n int) []string {
 	return names
 }
 
-// writeConversations writes a session file holding one empty conversation per name, the
+// writeConversations writes a session directory holding one empty conversation per name, the
 // last one active.
 func writeConversations(t *testing.T, e *env, names []string) {
 	t.Helper()
@@ -32,24 +33,25 @@ func writeConversations(t *testing.T, e *env, names []string) {
 		UpdatedAt time.Time         `json:"updatedAt"`
 	}
 	model := map[string]string{"provider": "mock", "model": "model-a"}
-	convs := map[string]conv{}
-	var order []string
+	write := func(path string, v any) {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 1; i <= n; i++ {
 		id := fmt.Sprint(i)
-		convs[id] = conv{ID: id, Name: names[i-1], Model: model, Messages: []any{},
-			CreatedAt: base.Add(time.Duration(i) * time.Minute), UpdatedAt: base.Add(time.Duration(i) * time.Minute)}
-		order = append(order, id)
+		write(conversationFile(e.Sessions, id), conv{ID: id, Name: names[i-1], Model: model, Messages: []any{},
+			CreatedAt: base.Add(time.Duration(i) * time.Minute), UpdatedAt: base.Add(time.Duration(i) * time.Minute)})
 	}
-	data, err := json.Marshal(map[string]any{
-		"activeId": fmt.Sprint(n), "conversations": convs, "order": order, "counter": n, "defaultModel": model,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(e.Sessions, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	write(filepath.Join(e.Sessions, "state.json"), map[string]any{"activeId": fmt.Sprint(n), "defaultModel": model})
 }
 
 // menuItemRows counts the rows of the open menu that show a numbered item.
@@ -255,7 +257,7 @@ func TestResumeSelectorSanitizesConversationNames(t *testing.T) {
 	v := s.ExpectScreen("the second conversation highlighted", func(v *vtScreen) bool {
 		return strings.Contains(highlightedRow(v), "two")
 	})
-	if v.RowOf("[model: mock/model-a]") < 0 {
+	if v.RowOf("[model: mock/model-a · effort: default]") < 0 {
 		t.Errorf("a conversation name cleared the screen:\n%s", v.Dump())
 	}
 	for _, osc := range v.oscs {

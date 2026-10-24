@@ -68,7 +68,7 @@ type env struct {
 	Home      string // HOME for the child, so nothing touches the real ~/.hmj
 	Workspace string // working directory of hmj
 	Config    string // HMJ_CONFIG
-	Sessions  string // HMJ_SESSIONS
+	Sessions  string // HMJ_SESSIONS, the session directory
 	AuditLog  string // HMJ_AUDIT_LOG
 	Rows      int    // terminal size for Start; 40x120 unless changed
 	Cols      int
@@ -82,7 +82,7 @@ func newEnv(t *testing.T) *env {
 		Home:      filepath.Join(root, "home"),
 		Workspace: filepath.Join(root, "ws"),
 		Config:    filepath.Join(root, "hmj", "config.json"),
-		Sessions:  filepath.Join(root, "hmj", "sessions.json"),
+		Sessions:  filepath.Join(root, "hmj", "sessions"),
 		AuditLog:  filepath.Join(root, "hmj", "audit.log"),
 		Rows:      40,
 		Cols:      120,
@@ -156,7 +156,7 @@ func (e *env) StartWithEnv(extra []string, args ...string) *session {
 	t.Helper()
 	master, slave, err := openPTY()
 	if err != nil {
-		t.Skipf("PTY not available: %v", err)
+		t.Fatalf("opening a PTY: %v", err)
 	}
 	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: uint16(e.Rows), Col: uint16(e.Cols)}); err != nil {
 		t.Fatal(err)
@@ -229,15 +229,16 @@ func (e *env) StartWithEnv(extra []string, args ...string) *session {
 	return s
 }
 
-// cleanEnv is the parent environment without HMJ_* settings, provider credentials and the
-// display variables, so a developer's own setup cannot leak into a test and copying from
-// /history cannot reach the developer's real clipboard through wl-copy or xclip.
+// cleanEnv is the parent environment without HMJ_* and colour settings, provider credentials
+// and the display variables, so a developer's own setup cannot leak into a test and copying
+// from /history cannot reach the developer's real clipboard through wl-copy or xclip.
 func cleanEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		switch {
-		case strings.HasPrefix(k, "HMJ_"), k == "ACCESSIBILITY", k == "HIGH_CONTRAST", k == "NO_COLOR":
+		case strings.HasPrefix(k, "HMJ_"), k == "ACCESSIBILITY", k == "HIGH_CONTRAST":
+		case k == "NO_COLOR", k == "FORCE_COLOR", k == "CLICOLOR", k == "CLICOLOR_FORCE":
 		case k == "DISPLAY", k == "WAYLAND_DISPLAY":
 		case strings.HasSuffix(k, "_API_KEY"), strings.HasSuffix(k, "_TOKEN"):
 		default:
@@ -468,4 +469,9 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// conversationFile returns the file of conversation id in the session directory dir.
+func conversationFile(dir, id string) string {
+	return filepath.Join(dir, "conversations", id+".json")
 }

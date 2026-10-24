@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -196,7 +198,7 @@ func TestSmallTerminalStillUsable(t *testing.T) {
 	s.Expect("ok")
 	s.ExpectPrompt()
 	s.ExpectScreen("the prompt on the last rows", func(v *vtScreen) bool {
-		return v.RowOf("[model: mock/model-b]") >= v.rows-3
+		return v.RowOf("[model: mock/model-b · effort: default]") >= v.rows-3
 	})
 	s.Quit()
 }
@@ -260,4 +262,47 @@ func TestPromptMarks(t *testing.T) {
 			t.Errorf("accessibility mode wrote OSC 133 marks")
 		}
 	})
+}
+
+// TestTurnDivider checks that a finished turn is set off from the next prompt by a blank line
+// and a rule of at most 80 columns, plain dashes in accessibility mode, and that the prompt after
+// the banner or a command that is not a turn gets none.
+func TestTurnDivider(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		glyph string
+	}{{"terminal", nil, "─"}, {"accessible", []string{"--accessible"}, "-"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := newProvider(t)
+			_, s := start(t, p, tc.args...)
+			s.Type("/shortcuts\r")
+			s.Expect("Display this shortcuts")
+			s.ExpectPrompt()
+			rule := regexp.MustCompile(`^` + regexp.QuoteMeta(tc.glyph) + `{20,}$`)
+			for _, line := range s.ScreenState().Lines() {
+				if rule.MatchString(line) {
+					t.Fatalf("divider before any turn: %q", line)
+				}
+			}
+
+			p.Queue(say("answer one"))
+			s.Type("question one\r")
+			s.Expect("answer one")
+			s.ExpectPrompt()
+			lines := s.ScreenState().Lines()
+			i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "> question one") })
+			j := slices.IndexFunc(lines[max(i, 0):], func(l string) bool { return strings.HasPrefix(l, "[tokens:") })
+			if i < 0 || j < 0 || i+j+3 >= len(lines) {
+				t.Fatalf("turn or footer not found:\n%s", strings.Join(lines, "\n"))
+			}
+			after := lines[i+j+1 : i+j+4]
+			if after[0] != "" || !rule.MatchString(after[1]) || len([]rune(after[1])) > 80 || !strings.HasPrefix(after[2], "[model:") {
+				t.Errorf("after the footer: %q, want a blank line, a rule of at most 80 %q and the model line", after, tc.glyph)
+			}
+			s.Quit()
+		})
+	}
 }
