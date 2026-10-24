@@ -102,7 +102,7 @@ func colorIndex(t *testing.T, codes []string, prefix string) int {
 func TestPaletteContrastUnderColorBlindness(t *testing.T) {
 	p := DefaultPalette()
 	roles := map[string][]string{
-		"Text": p.Text, "Muted": p.Muted, "LineNum": p.LineNum, "Prompt": p.Prompt, "Tool": p.Tool,
+		"Text": p.Text, "Muted": p.Muted, "Faint": p.Faint, "Prompt": p.Prompt, "Tool": p.Tool,
 		"Added": p.Added, "Removed": p.Removed, "Info": p.Info, "Warn": p.Warn, "Error": p.Error,
 		"Thinking": p.ThinkingParam,
 	}
@@ -148,7 +148,7 @@ func TestStatusLinesHaveNonColorCues(t *testing.T) {
 	for _, accessible := range []bool{false, true} {
 		SetAccessibility(accessible)
 		seen := map[string]bool{}
-		for _, line := range []string{OK("x"), Note("x"), Danger("x"), Caution("x"), Hint("x"), Task("x")} {
+		for _, line := range []string{OK("x"), Note("x"), Danger("x"), Caution("x"), Hint("x")} {
 			prefix := StripANSI(line)
 			if seen[prefix] {
 				t.Errorf("accessible=%v: two status kinds share the prefix %q", accessible, prefix)

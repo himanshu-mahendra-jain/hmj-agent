@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -196,6 +198,29 @@ func TestCompactionStoppedLeavesTheConversation(t *testing.T) {
 	}
 	if len(conv.Messages) != before {
 		t.Errorf("messages = %d, want %d", len(conv.Messages), before)
+	}
+}
+
+// TestCompactionWarnsWhenHistoryIsNotKept checks that a compaction whose replaced turns cannot be
+// written for /history is applied and reported as done, followed by a warning.
+func TestCompactionWarnsWhenHistoryIsNotKept(t *testing.T) {
+	t.Chdir(t.TempDir())
+	p := newScriptedProvider(t)
+	cfg := p.config()
+	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
+	conv := largeConversation()
+	if err := os.WriteFile("file", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conv.HistoryPath = filepath.Join("file", "c.jsonl")
+
+	out := captureOutput(t, func() { r.StartCompaction(context.Background(), conv).Finish() })
+
+	if !strings.Contains(out, "[compacted the conversation:") || !strings.Contains(out, "[the earlier turns were not kept for /history:") {
+		t.Errorf("output should report the compaction and the lost turns:\n%s", out)
+	}
+	if !conv.IsCompacted() {
+		t.Error("the conversation was not compacted")
 	}
 }
 

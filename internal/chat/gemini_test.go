@@ -561,6 +561,29 @@ func TestGeminiHTTPErrorClassification(t *testing.T) {
 	}
 }
 
+// TestGeminiHTTPErrorIsShownAsCodeAndMessage checks that an error body, also one framed as a
+// server-sent error event as some 400s come, is shown as its code and message, not raw JSON.
+func TestGeminiHTTPErrorIsShownAsCodeAndMessage(t *testing.T) {
+	const want = "HTTP 400: invalid_request: Request contains an invalid argument."
+	for name, body := range map[string]string{
+		"json": `{"error":{"message":"Request contains an invalid argument.","code":"invalid_request"}}`,
+		"sse": "event: error\ndata: {\"error\":{\"message\":\"Request contains an invalid argument.\"," +
+			"\"code\":\"invalid_request\"},\"event_type\":\"error\"}\n\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, provider, model := newGeminiTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, body)
+			})
+			_, _, _, _, err := client.streamGeminiOnce(context.Background(), provider, model,
+				[]Message{{Role: "user", Content: "x"}}, nil, nil, nil)
+			if err == nil || err.Error() != want {
+				t.Errorf("err = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
 func TestGeminiInStreamErrorIsReturned(t *testing.T) {
 	client, provider, model := newGeminiTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		requireGeminiAuth(t, r)

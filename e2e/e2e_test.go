@@ -1,7 +1,8 @@
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,14 +29,14 @@ func TestStartupAndCtrlDExit(t *testing.T) {
 	t.Parallel()
 	p := newProvider(t)
 	e, s := start(t, p)
-	if !strings.Contains(s.Screen(), "HMJ Agent") || !strings.Contains(s.Screen(), "[model: mock/model-a]") {
+	if !strings.Contains(s.Screen(), "HMJ Agent") || !strings.Contains(s.Screen(), "[model: mock/model-a · effort: default]") {
 		t.Errorf("banner or model line missing")
 	}
 	s.Quit()
 	if !strings.HasSuffix(s.Screen(), "\n") {
 		t.Errorf("output must end with a newline so the shell prompt starts on its own line")
 	}
-	if _, err := os.Stat(e.Sessions); err != nil {
+	if _, err := os.Stat(conversationFile(e.Sessions, "1")); err != nil {
 		t.Errorf("session file not saved on exit: %v", err)
 	}
 }
@@ -99,9 +100,8 @@ func TestFileToolsTurn(t *testing.T) {
 	s := e.Start()
 	s.ExpectPrompt()
 	s.Type("do the steps\r")
-	s.Expect("list_files: .")
-	s.Expect("notes.txt")
-	s.Expect("read_file: notes.txt")
+	s.Expect("list_files: . · 2 files · ")
+	s.Expect("read_file: notes.txt · 3 lines · ")
 	s.Expect("edit_file: notes.txt")
 	s.Expect("+ BETA")
 	s.Expect("write_file: out/summary.txt")
@@ -141,8 +141,8 @@ func TestFileToolsTurn(t *testing.T) {
 		}
 	}
 	// The session file holds the whole turn.
-	data, err := os.ReadFile(e.Sessions)
-	if err != nil || !json.Valid(data) || !strings.Contains(string(data), "All steps completed.") {
+	data, err := os.ReadFile(conversationFile(e.Sessions, "1"))
+	if err != nil || !jsontext.Value(data).IsValid() || !strings.Contains(string(data), "All steps completed.") {
 		t.Errorf("session file missing or incomplete: %v", err)
 	}
 }
@@ -167,8 +167,10 @@ func TestEscHaltsRunningToolAndKillsIt(t *testing.T) {
 	defer syscall.Kill(pid, syscall.SIGKILL) // never leak the sleeper if an assertion fails
 
 	s.PressEsc()
-	s.Expect("[halted by user (Esc)]")
+	// The notice comes after what the halted tool printed, just before the footer.
 	s.Expect("[command cancelled by user]")
+	s.Expect("[halted by user (Esc)]")
+	s.Expect("[tokens:")
 	s.ExpectPrompt()
 	waitUntil(t, "the tool process is gone", func() bool { return syscall.Kill(pid, 0) != nil })
 
@@ -185,7 +187,7 @@ func TestCtrlCHaltsStreamingReply(t *testing.T) {
 	_, s := start(t, p)
 	p.Queue(streamForever("tick", 20*time.Millisecond))
 	s.Type("talk forever\r")
-	s.Expect("tick\ntick\ntick")
+	s.Expect("tick\n  tick\n  tick") // each line after the 2-column margin
 	s.Type("\x03")
 	s.Expect("[halted by user (Ctrl+C)]")
 	s.ExpectPrompt()
@@ -214,7 +216,7 @@ func TestSignalsExitWithConventionalStatus(t *testing.T) {
 			if got := s.Wait(); got != tc.want {
 				t.Errorf("exit status = %d, want %d (128+%d)", got, tc.want, int(tc.sig))
 			}
-			if _, err := os.Stat(e.Sessions); err != nil {
+			if _, err := os.Stat(conversationFile(e.Sessions, "1")); err != nil {
 				t.Errorf("session not saved: %v", err)
 			}
 		})
@@ -241,7 +243,7 @@ func TestModelSwitchIsStickyAcrossRestarts(t *testing.T) {
 
 	s = e.Start()
 	s.Expect("resumed conversation")
-	s.Expect("[model: mock/model-b]")
+	s.Expect("[model: mock/model-b · effort: default]")
 	s.Quit()
 }
 
@@ -543,6 +545,22 @@ func TestProviderErrors(t *testing.T) {
 		}
 		s.Quit()
 	})
+	t.Run("error body cannot drive the terminal", func(t *testing.T) {
+		t.Parallel()
+		p := newProvider(t)
+		_, s := start(t, p)
+		// A proxy's plain-text answer carries the bytes themselves, not JSON's \u001b.
+		p.Queue(httpError(402, "out of credits\x1b]52;c;cHduZWQ=\a\x1b]0;pwned\a\x1b[2J"))
+		s.Type("hi\r")
+		s.Expect("out of credits")
+		s.ExpectPrompt()
+		for _, seq := range []string{"\x1b]52;", "\x1b]0;pwned", "\x1b[2J"} {
+			if strings.Contains(s.Raw(), seq) {
+				t.Errorf("the error body's %q reached the terminal", seq)
+			}
+		}
+		s.Quit()
+	})
 	t.Run("server error is retried", func(t *testing.T) {
 		t.Parallel()
 		p := newProvider(t)
@@ -569,8 +587,8 @@ func TestFetchURL(t *testing.T) {
 	_, s := start(t, p)
 	p.Queue(callTool("fetch_url", map[string]any{"url": site.URL}), say("fetched"))
 	s.Type("fetch it\r")
-	s.Expect("fetch_url: " + site.URL)
-	s.Expect("The secret word is pineapple.")
+	s.Expect("fetch_url: " + site.URL + " · ") // the page's size and lines, not its text
+	s.Expect(" B, 5 lines · ")
 	s.Expect("fetched")
 	s.ExpectPrompt()
 	s.Quit()

@@ -64,7 +64,8 @@ const MaxErrorResponseBytes = 1 << 20
 type StatusError struct {
 	Code int
 	// Body is the truncated response body, or a note that it could not be read. An Anthropic
-	// error body is shown as "<type>: <message>" instead of its raw JSON.
+	// error body is shown as "<type>: <message>", and a Gemini or OpenAI Responses one as
+	// "<code>: <message>", instead of its raw JSON.
 	Body string
 	// Type is the Anthropic error type, such as "billing_error", when the body had that shape.
 	Type string
@@ -96,6 +97,8 @@ func httpErrorFromResponse(resp *http.Response) (retryAfter time.Duration, retry
 			statusErr.Type = apiErr.Error.Type
 			statusErr.RequestID = apiErr.RequestID
 			shown = []byte(apiErr.Error.Type + ": " + apiErr.Error.Message)
+		} else if code, msg, ok := parseCodedErrorBody(data); ok {
+			shown = []byte(code + ": " + msg)
 		}
 		statusErr.Body = truncateErrorBody(shown, maxShownErrorRunes)
 		// The display is cut short; the diagnostic log keeps the whole body.
@@ -137,6 +140,38 @@ func parseAnthropicErrorBody(data []byte) (anthropicErrorBody, bool) {
 		return anthropicErrorBody{}, false
 	}
 	return b, true
+}
+
+// codedErrorBody is the error shape of the Gemini Interactions and OpenAI Responses APIs:
+// {"error":{"code","message"}}, with a string code and no error type.
+type codedErrorBody struct {
+	Error struct {
+		Code    any    `json:"code"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// parseCodedErrorBody returns the code and message of a codedErrorBody. Gemini sometimes sends
+// it framed as a server-sent error event ("event: error" and a "data:" line), which is unwrapped.
+// A body with an error type (OpenAI Chat Completions) is not taken, as its code may be null.
+func parseCodedErrorBody(data []byte) (code, message string, ok bool) {
+	text := strings.TrimSpace(string(data))
+	for line := range strings.Lines(text) {
+		if payload, found := strings.CutPrefix(strings.TrimSpace(line), "data:"); found {
+			text = strings.TrimSpace(payload)
+			break
+		}
+	}
+	var b codedErrorBody
+	if err := json.Unmarshal([]byte(text), &b); err != nil || b.Error.Type != "" || b.Error.Message == "" {
+		return "", "", false
+	}
+	code, isString := b.Error.Code.(string)
+	if !isString || code == "" {
+		return "", "", false
+	}
+	return code, b.Error.Message, true
 }
 
 // ParseRetryAfterHeader parses a numeric Retry-After header or HTTP date into a duration.

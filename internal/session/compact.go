@@ -2,7 +2,9 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"slices"
+	"time"
 
 	"hmj-agent/internal/chat"
 )
@@ -68,14 +70,21 @@ func (c *Conversation) historyStart() int {
 }
 
 // ApplyCompaction replaces the first upTo messages, the ones the compaction was made from, with
-// compacted, keeping the system prompt and any message appended since. It returns
-// ErrCompactionOutdated, and changes nothing, when the conversation has fewer messages than that.
+// compacted, keeping the system prompt and any message appended since. The replaced messages are
+// archived first for /history. It returns ErrCompactionOutdated, and changes nothing, when the
+// conversation has fewer messages than that. When archiving fails the compaction is applied all
+// the same, and the error returned wraps ErrHistoryNotSaved.
 func (c *Conversation) ApplyCompaction(compacted chat.Message, upTo int) error {
 	start := c.historyStart()
 	if upTo < start || upTo > len(c.Messages) {
 		return ErrCompactionOutdated
 	}
+	archiveErr := c.archive(c.Messages[start:upTo])
 	c.Messages = slices.Concat(c.Messages[:start], []chat.Message{compacted}, c.Messages[upTo:])
 	c.resetTokenMark()
+	c.UpdatedAt = time.Now()
+	if archiveErr != nil {
+		return fmt.Errorf("%w: %w", ErrHistoryNotSaved, archiveErr)
+	}
 	return nil
 }

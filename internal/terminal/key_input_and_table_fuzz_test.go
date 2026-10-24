@@ -50,7 +50,7 @@ func FuzzSeamlessInputKeys(f *testing.F) {
 		}
 		done := make(chan result, 1)
 		go func() {
-			text, _, err := ReadSeamlessInput(bufio.NewReader(slave))
+			text, _, err := ReadSeamlessInput(bufio.NewReader(slave), nil)
 			done <- result{text, err}
 		}()
 		waitUntilRaw(t, slave) // keys typed before raw mode would be line-edited by the terminal
@@ -102,7 +102,7 @@ func openPollablePTY(t *testing.T) (master, slave *os.File) {
 	t.Helper()
 	m, s, err := openPTY()
 	if err != nil {
-		t.Skipf("PTY not available in environment: %v", err)
+		t.Fatalf("opening a PTY: %v", err)
 	}
 	pollable := func(f *os.File) *os.File {
 		fd, err := unix.Dup(int(f.Fd()))
@@ -154,7 +154,7 @@ func FuzzMarkdownTableRendering(f *testing.F) {
 	f.Fuzz(func(t *testing.T, md string, split int) {
 		md = theme.Sanitize(md)
 		var out strings.Builder
-		ts := NewTableStreamer(func(s string) { out.WriteString(s) })
+		ts := NewMarkdownStreamer(func(s string) { out.WriteString(s) })
 		split = min(max(split, 0), len(md))
 		ts.Write(md[:split])
 		ts.Write(md[split:])

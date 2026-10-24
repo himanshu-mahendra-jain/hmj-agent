@@ -65,6 +65,19 @@ func TestConversationIsCompactedOnlyOverTheLimit(t *testing.T) {
 	if turnReq := p.LastRequest(); !strings.Contains(turnReq, "WINDOW-OF-NINE-TURNS") || !strings.Contains(turnReq, `"question 10"`) {
 		t.Errorf("after a restart the turn should still carry the compacted window:\n%s", turnReq)
 	}
+	s.ExpectPrompt()
+
+	// /history still lists and shows the compacted turns, before the turns since.
+	s.Type("\x19") // Ctrl+Y
+	s.Expect("browse turns")
+	s.TypeSlowly("question 9")
+	s.Expect("[9/11] (compacted) question 9")
+	s.Type("\r")
+	s.Expect("choose action")
+	s.TypeSlowly("view")
+	s.Type("\r")
+	s.Expect("answer 9")
+	s.ExpectPrompt()
 	s.Quit()
 }
 

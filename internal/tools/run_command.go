@@ -1,13 +1,13 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,18 +29,30 @@ func (t *RunCommandTool) Definition() chat.ToolDefinition {
 	return chat.ToolDefinition{
 		Type: "function",
 		Function: chat.FunctionDefinition{
-			Name:        "run_command",
-			Description: "Run any shell command on the host (the agent runs on a dedicated machine with no restrictions), in the current working directory by default.",
+			Name: "run_command",
+			Description: "Run any shell command on the host (the agent runs on a dedicated machine with no restrictions), in the current working directory by default. " +
+				"It runs under sh with pipefail set where sh supports it, so a pipeline such as `make | tail` fails, and $? reports, when any command in it fails. " +
+				"stdout and stderr come back together, in the order the command wrote them. An output over 64KB is returned as its first 16KB and its last 48KB, " +
+				"and the whole output is saved to a file the result names, for read_file or grep. " +
+				"Set background for a command likely to take more than about 2 minutes, such as a full test suite, a benchmark or an emulator boot: " +
+				"it returns at once with a job number, and its output goes to a log. Then tell the user what is running and end your turn rather than waiting: " +
+				"you are told when it ends, with its exit code and last lines, in a later tool result or message, and the user can talk to you meanwhile. " +
+				"check_command reports on a job or stops it. The user can also move a running command to the background with Ctrl+B.",
 			Parameters: map[string]any{
-				"type": "object",
+				"type":             "object",
+				chat.PropertyOrder: []string{"command", "background", "timeout_seconds", "workdir"},
 				"properties": map[string]any{
 					"command": map[string]any{
 						"type":        "string",
 						"description": "The command line string to execute.",
 					},
+					"background": map[string]any{
+						"type":        "boolean",
+						"description": "Run the command as a background job: the call returns at once with its job number, and you are told when it ends.",
+					},
 					"timeout_seconds": map[string]any{
 						"type":        "integer",
-						"description": "Optional execution timeout in seconds (default 60, max 300).",
+						"description": "Optional execution timeout in seconds: in the foreground default 60, max 1800; in the background default and max 14400 (4 hours).",
 					},
 					"workdir": map[string]any{
 						"type":        "string",
@@ -56,65 +68,9 @@ func (t *RunCommandTool) Definition() chat.ToolDefinition {
 
 type runCommandInput struct {
 	Command        string `json:"command"`
+	Background     bool   `json:"background"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 	Workdir        string `json:"workdir"`
-}
-
-type multiCappedWriter struct {
-	mu        sync.Mutex
-	limit     int
-	stdout    bytes.Buffer
-	stderr    bytes.Buffer
-	truncated bool
-}
-
-func newMultiCappedWriter(limit int) *multiCappedWriter {
-	return &multiCappedWriter{limit: limit}
-}
-
-type streamWriter struct {
-	mc       *multiCappedWriter
-	isStderr bool
-}
-
-func (sw *streamWriter) Write(p []byte) (int, error) {
-	sw.mc.mu.Lock()
-	defer sw.mc.mu.Unlock()
-	n := len(p)
-	currentTotal := sw.mc.stdout.Len() + sw.mc.stderr.Len()
-	buf := &sw.mc.stdout
-	if sw.isStderr {
-		buf = &sw.mc.stderr
-	}
-
-	if currentTotal < sw.mc.limit {
-		remaining := sw.mc.limit - currentTotal
-		if len(p) > remaining {
-			buf.Write(p[:remaining])
-			sw.mc.truncated = true
-		} else {
-			buf.Write(p)
-		}
-	} else {
-		sw.mc.truncated = true
-	}
-	return n, nil
-}
-
-func (mc *multiCappedWriter) Formatted() (string, bool) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-
-	stdoutStr := strings.TrimRight(mc.stdout.String(), "\r\n")
-	stderrStr := strings.TrimRight(mc.stderr.String(), "\r\n")
-
-	if stderrStr == "" {
-		return stdoutStr, mc.truncated
-	}
-	if stdoutStr == "" {
-		return stderrStr, mc.truncated
-	}
-	return fmt.Sprintf("[stdout]\n%s\n\n[stderr]\n%s", stdoutStr, stderrStr), mc.truncated
 }
 
 // parseRunCommandArgs decodes the tool arguments and requires a non-empty command.
@@ -147,7 +103,7 @@ func resolveRunCommandWorkdir(requested string) (string, error) {
 }
 
 // timeoutFor picks the command timeout: the tool's configured default, overridden by
-// the per-call timeout_seconds (capped at 300 seconds).
+// the per-call timeout_seconds (capped at MaxCommandTimeoutSeconds).
 func (t *RunCommandTool) timeoutFor(in runCommandInput) time.Duration {
 	timeout := 60 * time.Second
 	if t.TimeoutDuration > 0 {
@@ -156,16 +112,46 @@ func (t *RunCommandTool) timeoutFor(in runCommandInput) time.Duration {
 		timeout = time.Duration(t.TimeoutSeconds) * time.Second
 	}
 	if in.TimeoutSeconds > 0 {
-		timeout = time.Duration(min(in.TimeoutSeconds, 300)) * time.Second
+		timeout = time.Duration(min(in.TimeoutSeconds, MaxCommandTimeoutSeconds)) * time.Second
 	}
 	return timeout
 }
 
-// newRunCommand builds the shell command for cmdStr in workdir, bound to ctx. On
-// timeout the whole process group is killed, and WaitDelay bounds pipe drains.
-func newRunCommand(ctx context.Context, cmdStr, workdir string, timeout time.Duration) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+var (
+	pipefailMu      sync.Mutex
+	pipefailChecked bool
+	pipefailOK      bool
+)
+
+// shellHasPipefail reports whether sh accepts -o pipefail (bash, recent dash and
+// busybox ash). Without it, `make | tail; echo $?` reports tail's status, and a model
+// reads a failed build as a passing one. The answer is kept once sh has been found.
+func shellHasPipefail() bool {
+	pipefailMu.Lock()
+	defer pipefailMu.Unlock()
+	if !pipefailChecked {
+		if _, err := exec.LookPath("sh"); err != nil {
+			return false
+		}
+		pipefailOK = exec.Command("sh", "-o", "pipefail", "-c", ":").Run() == nil
+		pipefailChecked = true
+	}
+	return pipefailOK
+}
+
+// newRunCommand builds the shell command for cmdStr in workdir, bound to ctx, with
+// pipefail set where sh has it and $HMJ_SCRATCH set to scratch, if any. When ctx ends the
+// whole process group is killed, and WaitDelay bounds pipe drains.
+func newRunCommand(ctx context.Context, cmdStr, workdir, scratch string, timeout time.Duration) *exec.Cmd {
+	args := []string{"-c", cmdStr}
+	if shellHasPipefail() {
+		args = append([]string{"-o", "pipefail"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "sh", args...)
 	cmd.Dir = workdir
+	if scratch != "" {
+		cmd.Env = append(os.Environ(), "HMJ_SCRATCH="+scratch)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// If the timeout fires, kill the entire process group hard; WaitDelay bounds how
 	// long we wait on pipe drains so stubborn grandchild processes cannot hang.
@@ -188,10 +174,30 @@ func newRunCommand(ctx context.Context, cmdStr, workdir string, timeout time.Dur
 	return cmd
 }
 
-// runCommandExitNotice describes a failed command run, such as "[Exit code 2]".
-func runCommandExitNotice(runErr error) string {
+// exitOneOnNoMatch finds commands whose exit status 1 is an answer rather than a failure: grep
+// and rg found no match, diff and cmp found a difference.
+var exitOneOnNoMatch = regexp.MustCompile(`(^|[\s;&|(])(grep|egrep|fgrep|rg|diff|cmp)(\s|$)`)
+
+// runCommandExitNotice describes a failed run of cmdStr, such as "[Exit code 2]".
+func runCommandExitNotice(cmdStr string, runErr error) string {
 	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 		code := exitErr.ExitCode()
+		// Under pipefail, `grep -l "<failure" *.xml | head` that finds no failing test ends
+		// with grep's 1, which reads as the opposite of what it means.
+		if code == 1 && runErr.Error() == "exit status 1" {
+			if m := exitOneOnNoMatch.FindStringSubmatch(cmdStr); m != nil {
+				answer := "matches nothing"
+				if m[2] == "diff" || m[2] == "cmp" {
+					answer = "finds a difference"
+				}
+				return fmt.Sprintf("[Exit code 1: the command runs %s, which also exits 1 when it %s, and pipefail passes that on]", m[2], answer)
+			}
+		}
+		// Under pipefail, `seq 1 1000000 | head -1` ends with the status of seq, killed
+		// by SIGPIPE when head stopped reading: not a failure of the command's work.
+		if code == 128+int(syscall.SIGPIPE) {
+			return fmt.Sprintf("[Exit code %d: a command in a pipeline was stopped by SIGPIPE because the next one, such as head, stopped reading; usually not an error]", code)
+		}
 		// "exit status N" is just the ExitError's own text; repeating it
 		// after the code wastes tokens. Keep both only when they differ.
 		if runErr.Error() == "exit status "+strconv.Itoa(code) {
@@ -200,6 +206,23 @@ func runCommandExitNotice(runErr error) string {
 		return fmt.Sprintf("[Exit code %d: %v]", code, runErr)
 	}
 	return fmt.Sprintf("[%v]", runErr)
+}
+
+// inPlaceEdit finds sed or perl editing files in place (-i, -i.bak, -pi, --in-place).
+var inPlaceEdit = regexp.MustCompile(`(^|[\s;&|(])(sed|perl)(\s[^;&|\n]*?)?\s(-[a-zA-Z]*i\S*|--in-place\S*)`)
+
+// inPlaceEditNote is a note for a command that edits files with sed -i or perl -i: such a
+// change shows the user no diff and leaves no backup, as a session's sed -i on a source file
+// and strings.xml did. Commands that name the scratch directory get none.
+func inPlaceEditNote(ctx context.Context, cmdStr string) string {
+	m := inPlaceEdit.FindStringSubmatch(cmdStr)
+	if m == nil || strings.Contains(cmdStr, "HMJ_SCRATCH") {
+		return ""
+	}
+	if dir := scratchDirFrom(ctx); dir != "" && strings.Contains(cmdStr, dir) {
+		return ""
+	}
+	return fmt.Sprintf("[note: %s %s changes files with no diff shown and no backup kept; for project files use edit_file]", m[2], m[4])
 }
 
 // withNotice appends notice on its own line after res, or returns notice alone when
@@ -222,37 +245,64 @@ func (t *RunCommandTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if err != nil {
 		return "", err
 	}
-
-	timeout := t.timeoutFor(in)
-	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	cmd := newRunCommand(cmdCtx, cmdStr, workdir, timeout)
-
-	mc := newMultiCappedWriter(MaxCommandOutputBytes)
-	cmd.Stdout = &streamWriter{mc: mc, isStderr: false}
-	cmd.Stderr = &streamWriter{mc: mc, isStderr: true}
-
-	runErr := cmd.Run()
-
-	res, truncated := mc.Formatted()
-	if truncated {
-		res += "\n[output truncated to 64KB]"
+	if in.Background {
+		return startBackgroundJob(ctx, cmdStr, workdir, in.TimeoutSeconds), nil
 	}
 
-	if errors.Is(cmdCtx.Err(), context.Canceled) {
+	// One writer as both streams: exec then gives the command a single pipe for the two, so
+	// stdout and stderr arrive in the order the command wrote them.
+	out := newCommandOutput(cmdStr, progressFrom(ctx))
+	started := time.Now()
+	p, err := startShell(cmdStr, workdir, scratchDirFrom(ctx), out, t.timeoutFor(in))
+	if err != nil {
+		return withNotice(out.finish(), fmt.Sprintf("[%v]", err)), nil
+	}
+
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+		p.stop()
+	case <-backgroundKeyFrom(ctx):
+		return moveToBackground(ctx, p, cmdStr, out, started), nil
+	}
+	res := out.finish()
+
+	switch {
+	case p.stopped.Load():
 		return withNotice(res, "[command cancelled by user]"), nil
-	}
-	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+	case p.timedOut.Load():
 		return withNotice(res, "[command timed out]"), nil
+	case p.err != nil:
+		res = withNotice(res, runCommandExitNotice(cmdStr, p.err))
+	case res == "":
+		res = "[command executed successfully with no output]"
 	}
-
-	if runErr != nil {
-		return withNotice(res, runCommandExitNotice(runErr)), nil
-	}
-
-	if res == "" {
-		return "[command executed successfully with no output]", nil
+	if note := inPlaceEditNote(ctx, cmdStr); note != "" {
+		res = withNotice(res, note)
 	}
 	return res, nil
+}
+
+// startBackgroundJob starts cmdStr as a background job and returns the call's result.
+func startBackgroundJob(ctx context.Context, cmdStr, workdir string, timeoutSeconds int) string {
+	timeout := time.Duration(MaxBackgroundJobSeconds) * time.Second
+	if timeoutSeconds > 0 {
+		timeout = time.Duration(min(timeoutSeconds, MaxBackgroundJobSeconds)) * time.Second
+	}
+	j, err := Jobs.start(scratchDirFrom(ctx), cmdStr, workdir, timeout)
+	if err != nil {
+		return fmt.Sprintf("[%v]", err)
+	}
+	return fmt.Sprintf("[started background job %d; %s. You will be told when it ends, with its exit code and last lines; meanwhile end your turn rather than wait, and the user can talk to you. check_command reports on it or stops it.]", j.ID, j.out.where())
+}
+
+// moveToBackground hands a running foreground command to the job registry when the user
+// presses Ctrl+B, and returns the call's result: the output so far and the job's number.
+func moveToBackground(ctx context.Context, p *shellProcess, cmdStr string, out *commandOutput, started time.Time) string {
+	var soFar string
+	j := Jobs.adopt(scratchDirFrom(ctx), cmdStr, p, started, time.Duration(MaxBackgroundJobSeconds)*time.Second, func() string {
+		soFar = out.finish()
+		return soFar
+	})
+	return withNotice(soFar, fmt.Sprintf("[moved to the background by the user as job %d after %s; the output so far is above, and %s. You will be told when it ends, with its exit code and last lines; the user can talk to you meanwhile. check_command reports on it or stops it.]", j.ID, formatElapsed(time.Since(started)), j.out.where()))
 }

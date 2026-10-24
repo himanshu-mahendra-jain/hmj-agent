@@ -13,7 +13,7 @@ func TestInteractiveSelectOnTerminal(t *testing.T) {
 	items := numberedItems(5)
 	items[3].IsActive = true
 
-	run := func(t *testing.T, screen *ptyScreen, cb *SelectCallbacks, def int, drive func()) (SelectItem, bool, error, string) {
+	run := func(t *testing.T, screen *ptyScreen, cb *SelectCallbacks, def int, drive func()) (SelectItem, bool, string, error) {
 		t.Helper()
 		type res struct {
 			item SelectItem
@@ -28,12 +28,12 @@ func TestInteractiveSelectOnTerminal(t *testing.T) {
 		screen.waitFor(t, "pick")
 		drive()
 		r := <-ch
-		return r.item, r.ok, r.err, screen.String()
+		return r.item, r.ok, screen.String(), r.err
 	}
 
 	t.Run("arrows then Enter", func(t *testing.T) {
 		screen := newPTYScreen(t)
-		item, ok, err, out := run(t, screen, nil, 0, func() { screen.Type(t, "\x1b[B\x1b[B\r") })
+		item, ok, out, err := run(t, screen, nil, 0, func() { screen.Type(t, "\x1b[B\x1b[B\r") })
 		if err != nil || !ok || item.ID != "id3" {
 			t.Fatalf("got (%v, %v, %v), want id3 confirmed", item, ok, err)
 		}
@@ -59,7 +59,7 @@ func TestInteractiveSelectOnTerminal(t *testing.T) {
 	})
 	t.Run("Esc cancels", func(t *testing.T) {
 		screen := newPTYScreen(t)
-		item, ok, err, _ := run(t, screen, nil, 0, func() { screen.Type(t, "\x1b") })
+		item, ok, _, err := run(t, screen, nil, 0, func() { screen.Type(t, "\x1b") })
 		if ok || err != nil || item.ID != "" {
 			t.Fatalf("got (%v, %v, %v), want cancelled", item, ok, err)
 		}
@@ -121,7 +121,7 @@ func readSeamless(reader *bufio.Reader) <-chan struct {
 		err    error
 	}, 1)
 	go func() {
-		text, action, err := ReadSeamlessInput(reader)
+		text, action, err := ReadSeamlessInput(reader, nil)
 		ch <- struct {
 			text   string
 			action ShortcutAction
@@ -560,7 +560,7 @@ func TestCtrlCIsAKeyOnTerminal(t *testing.T) {
 		screen := newPTYScreen(t)
 		ch := make(chan [3]any, 1)
 		go func() {
-			in, action, err := ReadSeamlessInput(bufio.NewReader(os.Stdin))
+			in, action, err := ReadSeamlessInput(bufio.NewReader(os.Stdin), nil)
 			ch <- [3]any{in, action, err}
 		}()
 		// Keys typed before raw mode is on would be handled by the line discipline:
@@ -589,7 +589,7 @@ func TestQueuedInputIsRenderedOnce(t *testing.T) {
 	screen := newPTYScreen(t)
 	ch := make(chan string, 1)
 	go func() {
-		in, _, _ := ReadSeamlessInput(bufio.NewReader(os.Stdin))
+		in, _, _ := ReadSeamlessInput(bufio.NewReader(os.Stdin), nil)
 		ch <- in
 	}()
 	screen.waitFor(t, "\x1b[?2004h") // raw mode is on

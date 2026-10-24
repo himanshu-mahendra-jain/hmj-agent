@@ -112,7 +112,12 @@ func (c *Client) ProbeModel(ctx context.Context, ref config.ModelRef) (result Mo
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		buf := make([]byte, maxHealthSuccessBodyBytes)
-		_, _ = resp.Body.Read(buf)
+		if _, err := resp.Body.Read(buf); err != nil && !errors.Is(err, io.EOF) {
+			result.Latency = time.Since(start)
+			result.Status, result.Details = probeTransportError(ctx, err)
+			result.Error = err
+			return result
+		}
 		result.Latency = time.Since(start)
 		result.Status = StatusHealthy
 		result.StatusCode = resp.StatusCode
@@ -121,10 +126,13 @@ func (c *Client) ProbeModel(ctx context.Context, ref config.ModelRef) (result Mo
 	}
 
 	result.Latency = time.Since(start)
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxHealthErrorBodyBytes))
+	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHealthErrorBodyBytes))
 	result.Status = probeHTTPStatus(resp.StatusCode)
 	result.StatusCode = resp.StatusCode
 	result.Details = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, parseHealthErrorMessage(bodyBytes, resp.StatusCode))
+	if readErr != nil {
+		result.Details += " (the error body could not be read in full: " + readErr.Error() + ")"
+	}
 	return result
 }
 

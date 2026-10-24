@@ -1,7 +1,7 @@
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -84,8 +84,10 @@ func TestCtrlCHaltsRunningToolAndKillsIt(t *testing.T) {
 	defer syscall.Kill(pid, syscall.SIGKILL) // never leak the sleeper if an assertion fails
 
 	s.Type("\x03")
-	s.Expect("[halted by user (Ctrl+C)]")
+	// The notice comes after what the halted tool printed, just before the footer.
 	s.Expect("[command cancelled by user]")
+	s.Expect("[halted by user (Ctrl+C)]")
+	s.Expect("[tokens:")
 	s.ExpectPrompt()
 	waitUntil(t, "the tool process is gone", func() bool { return syscall.Kill(pid, 0) != nil })
 

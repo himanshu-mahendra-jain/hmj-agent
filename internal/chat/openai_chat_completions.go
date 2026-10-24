@@ -13,9 +13,8 @@ import (
 	"hmj-agent/internal/config"
 )
 
-// Legacy OpenAI Chat Completions Wire Types.
-// All legacy completions types and logic are kept in this file to make
-// deprecating and removing the legacy completions API trivial in the future.
+// OpenAI Chat Completions wire types, for the many OpenAI-compatible servers (Ollama,
+// llama.cpp, vLLM, Gemini's /openai path) that speak only this protocol.
 
 type completionsRequest struct {
 	Model         string                   `json:"model"`
@@ -81,9 +80,14 @@ func convertMessagesToCompletions(messages []Message) []completionsMessage {
 	for _, msg := range portableCompactions(messages, "") {
 		switch msg.Role {
 		case "tool":
+			var content strings.Builder
+			content.WriteString(msg.Content)
+			for _, img := range msg.Images {
+				content.WriteString("\n" + img.Note("Chat Completions tool results carry text only"))
+			}
 			msgs = append(msgs, completionsMessage{
 				Role:       "tool",
-				Content:    msg.Content,
+				Content:    content.String(),
 				ToolCallID: msg.ToolCallID,
 			})
 		case "assistant":
@@ -99,6 +103,8 @@ func convertMessagesToCompletions(messages []Message) []completionsMessage {
 
 type completionsAccumulator struct {
 	startTime time.Time
+	// toolProgress is told about each tool call as the model writes it.
+	toolProgress toolProgress
 	// firstToken is when output was first shown, which decides whether a retry would repeat it.
 	// firstOutput is when the first reasoning, text or tool-call delta arrived; it times the
 	// response.
@@ -204,6 +210,7 @@ func (a *completionsAccumulator) handle(data string, onReasoning, onDelta func(s
 					b.WriteString(tcDelta.Function.Arguments)
 				}
 			}
+			a.toolProgress.report(tc.Function.Name, a.toolArgsByIndex[idx].Len())
 		}
 	}
 
@@ -268,8 +275,8 @@ func (a *completionsAccumulator) result() (Message, *TokenUsage) {
 	}, usage
 }
 
-// streamCompletionsOnce executes one streaming request against the legacy
-// OpenAI Chat Completions API (POST /chat/completions).
+// streamCompletionsOnce executes one streaming request against the OpenAI Chat
+// Completions API (POST /chat/completions).
 func (c *Client) streamCompletionsOnce(
 	ctx context.Context,
 	provider config.Provider,
@@ -322,6 +329,7 @@ func (c *Client) streamCompletionsOnce(
 
 	startTime := time.Now()
 	acc := newCompletionsAccumulator(startTime)
+	acc.toolProgress = toolProgressFrom(ctx)
 	retryAfter, retryable, err := c.doStream(ctx, req, func(_, data string) error {
 		return acc.handle(data, onReasoning, onDelta)
 	}, func() bool { return !acc.firstToken.IsZero() })

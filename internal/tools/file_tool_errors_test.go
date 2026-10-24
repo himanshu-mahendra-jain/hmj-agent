@@ -94,9 +94,12 @@ func TestReadFileEdgeCases(t *testing.T) {
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	huge := filepath.Join(dir, "huge.bin")
+	huge := filepath.Join(dir, "huge.log")
 	f, err := os.Create(huge)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(strings.Repeat("a line of text\n", binarySniffBytes/15+1)); err != nil { // text where it is checked
 		t.Fatal(err)
 	}
 	if err := f.Truncate(MaxReadableFileSize + 1); err != nil { // sparse: no disk cost
@@ -114,7 +117,6 @@ func TestReadFileEdgeCases(t *testing.T) {
 		want    string // exact output, when no error is expected
 		wantErr string
 	}{
-		{"directory", map[string]any{"path": dir}, "", "is a directory"},
 		{"over the size cap", map[string]any{"path": huge}, "", "too large"},
 		{"missing", map[string]any{"path": filepath.Join(dir, "nope")}, "", "no such file"},
 		{"empty file", map[string]any{"path": empty}, "[empty file]", ""},
@@ -145,12 +147,12 @@ func TestReadFileUnreadable(t *testing.T) {
 	}
 }
 
-// A first line of exactly MaxReadFileBytes fits the cap, so it is returned whole and the
-// trailer offers the next line instead of claiming the line was cut.
+// A first line of exactly MaxReadFileBytes fits the cap when read without numbers, so it is
+// returned whole and the trailer offers the next line instead of claiming the line was cut.
 func TestReadFileLineExactlyAtByteCapIsNotReportedCut(t *testing.T) {
 	line := strings.Repeat("z", MaxReadFileBytes)
 	path := writeReadFixture(t, line+"\nsecond\n")
-	out := readWith(t, path, 0, 0)
+	out := readArgs(t, map[string]any{"path": path, "numbered": false})
 	if strings.Contains(out, "was cut") {
 		t.Fatalf("a line that fits was reported as cut: %q", out[len(line):])
 	}

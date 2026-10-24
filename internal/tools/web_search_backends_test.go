@@ -12,31 +12,35 @@ import (
 	"time"
 )
 
-// searchBackends serves the three web_search backends from one server: the DuckDuckGo
-// HTML form at /ddg, the instant answer API at /instant and Wikipedia at /wiki. A nil
-// handler answers with an empty but well-formed response.
+// searchBackends serves the web_search backends from one server: the DuckDuckGo HTML form at
+// /ddg, Brave at /brave, Bing at /bing, the instant answer API at /instant and Wikipedia at
+// /wiki. A nil handler answers with an empty but well-formed response.
 type searchBackends struct {
-	ddg, instant, wiki http.HandlerFunc
+	ddg, brave, bing, instant, wiki http.HandlerFunc
 }
 
 func (b searchBackends) tool(t *testing.T) *WebSearchTool {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch h := map[string]http.HandlerFunc{"/ddg": b.ddg, "/instant": b.instant, "/wiki": b.wiki}[r.URL.Path]; {
+		switch h := map[string]http.HandlerFunc{"/ddg": b.ddg, "/brave": b.brave, "/bing": b.bing, "/instant": b.instant, "/wiki": b.wiki}[r.URL.Path]; {
 		case h != nil:
 			h(w, r)
 		case r.URL.Path == "/wiki":
-			fmt.Fprint(w, `["q",[],[],[]]`)
+			fmt.Fprint(w, `{"query":{"search":[]}}`)
 		case r.URL.Path == "/instant":
 			fmt.Fprint(w, `{}`)
+		default:
+			fmt.Fprint(w, `<html></html>`)
 		}
 	}))
 	t.Cleanup(srv.Close)
 	return &WebSearchTool{
 		Client:             srv.Client(),
 		DDGHTMLEndpoint:    srv.URL + "/ddg",
-		DDGInstantEndpoint: srv.URL + "/instant?q=%s",
-		WikipediaEndpoint:  srv.URL + "/wiki?search=%s&limit=%d",
+		BraveEndpoint:      srv.URL + "/brave",
+		BingEndpoint:       srv.URL + "/bing",
+		DDGInstantEndpoint: srv.URL + "/instant",
+		WikipediaEndpoint:  srv.URL + "/wiki",
 	}
 }
 
@@ -94,17 +98,25 @@ func TestWebSearchBackendFallthrough(t *testing.T) {
 			name: "every backend failing is reported per backend",
 			backends: searchBackends{
 				ddg:     reply(`<div id="anomaly-modal">are you a robot</div>`),
+				brave:   reply(`<html>captcha</html>`),
+				bing:    status(http.StatusTooManyRequests),
 				instant: reply(`not json`),
-				wiki:    reply(`{"not":"an array"}`),
+				wiki:    reply(`{"not":"a search"}`),
 			},
 			query: `{"query":"q"}`,
-			want:  []string{"all backends failed: duckduckgo: DDG bot challenge encountered; duckduckgo_instant: ", "; wikipedia: unexpected Wikipedia response format"},
+			want:  []string{"all backends failed: duckduckgo: DDG bot challenge encountered; brave: bot challenge; bing: status 429; duckduckgo_instant: ", "; wikipedia: unexpected Wikipedia response format"},
 		},
 		{
-			name:     "a truncated DDG page, an empty instant answer and a mistyped Wikipedia array all fail",
-			backends: searchBackends{ddg: truncatedBody, instant: status(http.StatusInternalServerError), wiki: reply(`["q","titles",[],[]]`)},
+			name:     "a truncated page, an error status and a mistyped Wikipedia answer all fail",
+			backends: searchBackends{ddg: truncatedBody, brave: status(http.StatusForbidden), bing: truncatedBody, instant: status(http.StatusInternalServerError), wiki: reply(`{"query":{"search":"titles"}}`)},
 			query:    `{"query":"q"}`,
-			want:     []string{"duckduckgo: unexpected EOF", "wikipedia: failed parsing Wikipedia array"},
+			want:     []string{"duckduckgo: unexpected EOF", "brave: status 403", "bing: unexpected EOF", "wikipedia: unexpected Wikipedia response format"},
+		},
+		{
+			name:     "DuckDuckGo's 202 is a bot challenge, and Brave answers",
+			backends: searchBackends{ddg: status(http.StatusAccepted), brave: reply(braveResult("https://b.example/", "From Brave", "Jan 2, 2026 -", "brave text"))},
+			query:    `{"query":"q"}`,
+			want:     []string{"1. [From Brave](https://b.example/)\n   Jan 2, 2026 · brave text"},
 		},
 		{
 			name:     "empty answers everywhere are not failures",
@@ -115,10 +127,16 @@ func TestWebSearchBackendFallthrough(t *testing.T) {
 		},
 		{
 			name:     "Wikipedia keeps to the limit",
-			backends: searchBackends{wiki: reply(`["q",["A","B","C"],["a","b","c"],["https://a","https://b","https://c"]]`)},
+			backends: searchBackends{wiki: reply(`{"query":{"search":[{"title":"A b","snippet":"<span class=\"searchmatch\">a</span> text","timestamp":"2026-01-02T03:04:05Z"},{"title":"B","snippet":"b"}]}}`)},
 			query:    `{"query":"q","limit":1}`,
-			want:     []string{"1. [A](https://a)\n   a"},
+			want:     []string{"1. [A b](https://en.wikipedia.org/wiki/A_b)\n   updated 2026-01-02 · a text"},
 			wantNot:  []string{"[B]"},
+		},
+		{
+			name:     "a Wikipedia title keeps its parentheses, and no date shows without a timestamp",
+			backends: searchBackends{wiki: reply(`{"query":{"search":[{"title":"Go (game)","snippet":"board game"}]}}`)},
+			query:    `{"query":"q"}`,
+			want:     []string{"1. [Go (game)](https://en.wikipedia.org/wiki/Go_(game))\n   board game"},
 		},
 	}
 	for _, tc := range tests {
@@ -138,19 +156,6 @@ func TestWebSearchBackendFallthrough(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// Wikipedia rows whose title or URL is not a string are skipped, and so is a title past
-// the end of the URL list, without hiding the good rows in between.
-func TestWebSearchWikipediaMalformedRows(t *testing.T) {
-	tool := searchBackends{wiki: reply(`["q",[1,"Bad link","Good","No URL"],["","","fine"],["https://one",2,"https://good"]]`)}.tool(t)
-	out, err := tool.Execute(context.Background(), `{"query":"q"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "1. [Good](https://good)\n   fine") || strings.Contains(out, "Bad link") || strings.Contains(out, "No URL") || strings.Contains(out, "2. ") {
-		t.Errorf("output:\n%s", out)
 	}
 }
 
@@ -179,14 +184,16 @@ func TestWebSearchCancelledDuringFallback(t *testing.T) {
 func TestWebSearchUnusableEndpoints(t *testing.T) {
 	tool := &WebSearchTool{
 		DDGHTMLEndpoint:    "http://[::1",
-		DDGInstantEndpoint: "http://127.0.0.1:1/?q=%s",
-		WikipediaEndpoint:  "http://127.0.0.1:1/?s=%s&l=%d",
+		BraveEndpoint:      "http://[::1",
+		BingEndpoint:       "http://127.0.0.1:1/",
+		DDGInstantEndpoint: "http://127.0.0.1:1/",
+		WikipediaEndpoint:  "http://127.0.0.1:1/",
 	}
 	out, err := tool.Execute(context.Background(), `{"query":"q"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range []string{"all backends failed", "duckduckgo: parse", "duckduckgo_instant: Get", "wikipedia: Get"} {
+	for _, w := range []string{"all backends failed", "duckduckgo: parse", "brave: parse", "bing: Get", "duckduckgo_instant: Get", "wikipedia: Get"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
@@ -196,7 +203,7 @@ func TestWebSearchUnusableEndpoints(t *testing.T) {
 // Without overrides the tool talks to the real public endpoints, over HTTPS.
 func TestWebSearchDefaultEndpoints(t *testing.T) {
 	tool := &WebSearchTool{}
-	for _, ep := range []string{tool.ddgHTMLEndpoint(), tool.ddgInstantEndpoint(), tool.wikipediaEndpoint()} {
+	for _, ep := range []string{tool.ddgHTMLEndpoint(), tool.braveEndpoint(), tool.bingEndpoint(), tool.ddgInstantEndpoint(), tool.wikipediaEndpoint()} {
 		if !strings.HasPrefix(ep, "https://") {
 			t.Errorf("endpoint %q is not HTTPS", ep)
 		}

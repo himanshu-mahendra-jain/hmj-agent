@@ -12,7 +12,7 @@ func TestNoColorKeepsMeaningInText(t *testing.T) {
 	defer SetEnabled(false)
 
 	t.Setenv("NO_COLOR", "1")
-	if ComputeEnabledForTest() {
+	if computeEnabled() {
 		t.Fatal("NO_COLOR must disable colour")
 	}
 	SetEnabled(false)

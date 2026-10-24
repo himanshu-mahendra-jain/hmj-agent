@@ -34,7 +34,7 @@ var asciiFallback = strings.NewReplacer(
 	// Listed before "·" so a hunk separator reads as an ellipsis, not "|||".
 	"···", "...",
 	"↑", "Up", "↓", "Down", "—", "-", "−", "-", "…", "...", "·", "|",
-	"•", "*", "★", "*", "❯", ">", "▾", ">", "→", "->", "│", "|",
+	"•", "*", "★", "*", "❯", ">", "▾", ">", "▸", ">", "→", "->", "│", "|",
 )
 
 // ASCII returns s unchanged, or in accessibility mode with the interface glyphs replaced
@@ -84,20 +84,6 @@ func Hint(s string) string {
 	return Style("→ "+s, pal.Muted...)
 }
 
-func Task(s string) string {
-	if Accessibility() {
-		return Style("[TASK] "+s, pal.Info...)
-	}
-	return Style("⦿ "+s, pal.Info...)
-}
-
-func Dim(s string) string {
-	if Accessibility() {
-		return Style("[*] "+s, pal.Muted...)
-	}
-	return Style("· "+s, pal.Muted...)
-}
-
 // ToolBadge returns a vibrant, semantic icon and colored badge for each tool call.
 func ToolBadge(name string) string {
 	if !enabled {
@@ -118,6 +104,8 @@ func ToolBadge(name string) string {
 		return Style("✏️  edit_file:", pal.Tool...)
 	case "list_files":
 		return Style("📁 list_files:", pal.Tool...)
+	case "grep":
+		return Style("🔎 grep:", pal.Tool...)
 	case "run_command":
 		return Style("⚡ run_command:", pal.Tool...)
 	case "web_search":

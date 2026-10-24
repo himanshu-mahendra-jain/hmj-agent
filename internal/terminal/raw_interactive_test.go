@@ -203,7 +203,7 @@ func openPTY() (master, slave *os.File, err error) {
 func TestReadSeamlessInputPTY(t *testing.T) {
 	master, slave, err := openPTY()
 	if err != nil {
-		t.Skipf("PTY not available in environment: %v", err)
+		t.Fatalf("opening a PTY: %v", err)
 	}
 	defer master.Close()
 	defer slave.Close()
@@ -223,7 +223,7 @@ func TestReadSeamlessInputPTY(t *testing.T) {
 			t.Errorf("failed to write to PTY master: %v", err)
 		}
 	}()
-	input, action, err := ReadSeamlessInput(reader)
+	input, action, err := ReadSeamlessInput(reader, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,12 +238,12 @@ func TestReadSeamlessInputPTY(t *testing.T) {
 			t.Errorf("failed to write paste sequence to PTY master: %v", err)
 		}
 	}()
-	input, action, err = ReadSeamlessInput(reader)
+	input, action, err = ReadSeamlessInput(reader, nil)
 	if err != nil {
 		t.Fatalf("unexpected error on paste: %v", err)
 	}
-	if !strings.Contains(input, "first line") || !strings.Contains(input, "second line") {
-		t.Fatalf("expected multi-line paste content, got %q", input)
+	if action != ActionNone || !strings.Contains(input, "first line") || !strings.Contains(input, "second line") {
+		t.Fatalf("expected multi-line paste content with ActionNone, got (%q, %v)", input, action)
 	}
 
 	// 3. Shortcut keys: Ctrl+N (0x0e), Ctrl+R (0x12), Ctrl+O (0x0f), Ctrl+Y (0x19)
@@ -263,7 +263,7 @@ func TestReadSeamlessInputPTY(t *testing.T) {
 				t.Errorf("failed to write key 0x%02x to PTY master: %v", k, err)
 			}
 		}(c.key)
-		_, act, err := ReadSeamlessInput(reader)
+		_, act, err := ReadSeamlessInput(reader, nil)
 		if err != nil {
 			t.Fatalf("unexpected error on shortcut key 0x%02x: %v", c.key, err)
 		}
@@ -280,7 +280,7 @@ func TestReadSeamlessInputPTY(t *testing.T) {
 			t.Errorf("failed to write control keys to PTY master: %v", err)
 		}
 	}()
-	input, action, err = ReadSeamlessInput(reader)
+	input, action, err = ReadSeamlessInput(reader, nil)
 	if err != nil {
 		t.Fatalf("unexpected error after unbound control keys: %v", err)
 	}

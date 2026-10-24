@@ -74,8 +74,12 @@ func (r *Runner) generateTitle(ctx context.Context, ref config.ModelRef, prompt,
 	if err != nil {
 		return "", err
 	}
-	// The protocol is already known from the turn that just ran, so this sends no request.
-	api, _, _ := r.Client.DetectWireAPI(ctx, ref.Provider, provider)
+	// The protocol is already known from the turn that just ran, so this sends no request; as
+	// for a turn, only a cancelled detection stops the title request.
+	api, _, err := r.Client.DetectWireAPI(ctx, ref.Provider, provider)
+	if err != nil && ctx.Err() != nil {
+		return "", err
+	}
 	client := r.Client.WithModelOverride(ref, func(m *config.Model) { titleSettings(api, m) })
 	client.RetryConfig = chat.RetryConfig{}
 

@@ -169,16 +169,17 @@ func healthLatencyLabel(r chat.ModelHealthResult) string {
 	return theme.ASCII("—")
 }
 
-// healthDetailsLabel returns the details cell, truncated to 60 runes for failures.
+// healthDetailsLabel returns the details cell, truncated to 60 runes for failures. A failure's
+// details quote the provider's error body, so they are sanitized.
 func healthDetailsLabel(r chat.ModelHealthResult) string {
 	if r.Status == chat.StatusHealthy {
 		return "healthy"
 	}
-	runes := []rune(r.Details)
+	runes := []rune(strings.Join(strings.Fields(theme.Sanitize(r.Details)), " "))
 	if len(runes) > 60 {
 		return string(runes[:57]) + "..."
 	}
-	return r.Details
+	return string(runes)
 }
 
 // healthSummaryBadge picks the summary prefix colored by overall health.

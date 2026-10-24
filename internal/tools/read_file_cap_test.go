@@ -23,11 +23,17 @@ func writeReadFixture(t *testing.T, content string) string {
 // readWith runs read_file on path with the given limit (0 for none) and offset (0 for none).
 func readWith(t *testing.T, path string, offset, limit int) string {
 	t.Helper()
-	args, err := json.Marshal(map[string]any{"path": path, "offset": offset, "limit": limit})
+	return readArgs(t, map[string]any{"path": path, "offset": offset, "limit": limit})
+}
+
+// readArgs runs read_file with args and returns its result.
+func readArgs(t *testing.T, args map[string]any) string {
+	t.Helper()
+	argsJSON, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := (&ReadFileTool{}).Execute(context.Background(), string(args))
+	out, err := (&ReadFileTool{}).Execute(context.Background(), string(argsJSON))
 	if err != nil {
 		t.Fatalf("read_file: %v", err)
 	}
@@ -72,8 +78,9 @@ func TestReadFileByteCapWithoutLimit(t *testing.T) {
 	path := writeReadFixture(t, strings.Repeat(line+"\n", 100))
 	out := readWith(t, path, 0, 0)
 
-	// Each line is 4096 bytes with its newline, so exactly 64 lines fill the 256KB cap.
-	want := "--- truncated: showing lines 1-64 of 100; call read_file again with offset=65 ---"
+	// Each line is 4096 bytes with its newline and 7 more with its number, so 63 lines fit the
+	// 256KB cap and 64 would not.
+	want := "--- truncated: showing lines 1-63 of 100; call read_file again with offset=64 ---"
 	if !strings.HasSuffix(out, want) {
 		t.Fatalf("trailer = %q, want suffix %q", out[max(0, len(out)-120):], want)
 	}
@@ -94,7 +101,7 @@ func TestReadFileExplicitLimitHonouredUpToByteCap(t *testing.T) {
 
 	big := writeReadFixture(t, strings.Repeat(strings.Repeat("y", 4095)+"\n", 100))
 	out = readWith(t, big, 0, 100)
-	if !strings.Contains(out, "--- truncated: showing lines 1-64 of 100; call read_file again with offset=65 ---") {
+	if !strings.Contains(out, "--- truncated: showing lines 1-63 of 100; call read_file again with offset=64 ---") {
 		t.Errorf("explicit limit past the byte cap must be cut with a trailer, got tail %q", out[max(0, len(out)-120):])
 	}
 }
@@ -107,15 +114,18 @@ func TestReadFileCutsOverlongLineAndSaysSo(t *testing.T) {
 	if !strings.Contains(out, "is longer than 262144 bytes and was cut") {
 		t.Fatalf("overlong line not reported, tail %q", out[max(0, len(out)-100):])
 	}
-	if !strings.HasPrefix(out, "é") {
+	if !strings.HasPrefix(out, "   1 | é") {
 		t.Errorf("output does not start with the file content")
+	}
+	if text, _, _ := strings.Cut(out, "\n"); len(text) > MaxReadFileBytes {
+		t.Errorf("the cut line with its number is %d bytes, over the %d byte cap", len(text), MaxReadFileBytes)
 	}
 }
 
 // TestCapLinesToBytesKeepsRuneBoundary checks the cut never splits a multi-byte rune.
 func TestCapLinesToBytesKeepsRuneBoundary(t *testing.T) {
 	long := strings.Repeat("a", MaxReadFileBytes-1) + "é" // the é straddles the cap
-	kept, cut := capLinesToBytes([]string{long}, MaxReadFileBytes)
+	kept, cut := capLinesToBytes([]string{long}, MaxReadFileBytes, 0)
 	if !cut || len(kept) != 1 {
 		t.Fatalf("kept %d lines, cut %v; want one cut line", len(kept), cut)
 	}

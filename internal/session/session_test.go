@@ -13,8 +13,7 @@ import (
 )
 
 func TestSessionPersistence(t *testing.T) {
-	tempDir := t.TempDir()
-	sessionFile := filepath.Join(tempDir, "sessions.json")
+	sessionFile := t.TempDir()
 
 	modelRef := config.ModelRef{Provider: "dummy", Model: "model-a"}
 
@@ -39,6 +38,7 @@ func TestSessionPersistence(t *testing.T) {
 	if err := sm.Save(); err != nil {
 		t.Fatalf("failed to save sessions: %v", err)
 	}
+	closeManager(t, sm) // as hmj exits
 
 	// 2. Reload sessions - should automatically resume project-x (last active)
 	sm2 := LoadSessionManager(sessionFile, modelRef)
@@ -60,6 +60,7 @@ func TestSessionPersistence(t *testing.T) {
 	if err := sm2.Save(); err != nil {
 		t.Fatalf("failed to save after resume: %v", err)
 	}
+	closeManager(t, sm2)
 
 	sm3 := LoadSessionManager(sessionFile, modelRef)
 	if sm3.Active().Name != "default" {
@@ -77,7 +78,7 @@ func TestSessionPersistence(t *testing.T) {
 }
 
 func TestSessionSaveIsCompactAndRoundTrips(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
+	path := t.TempDir()
 	sm := LoadSessionManager(path, config.ModelRef{Provider: "p", Model: "m"})
 	conv := sm.Active()
 	conv.Name = "rt-check"
@@ -88,7 +89,8 @@ func TestSessionSaveIsCompactAndRoundTrips(t *testing.T) {
 	if err := sm.Save(); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
-	data, err := os.ReadFile(path)
+	closeManager(t, sm)
+	data, err := os.ReadFile(filepath.Join(path, "conversations", conv.ID+".json"))
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
@@ -110,7 +112,7 @@ func TestSessionSaveIsCompactAndRoundTrips(t *testing.T) {
 }
 
 func TestSessionRenameDeletePaths(t *testing.T) {
-	sm := NewSessionManager(config.ModelRef{Provider: "p", Model: "m"})
+	sm := LoadSessionManager("", config.ModelRef{Provider: "p", Model: "m"})
 	conv := sm.New("orig")
 
 	if err := sm.Rename(conv.ID, "renamed"); err != nil {
@@ -132,7 +134,7 @@ func TestSessionRenameDeletePaths(t *testing.T) {
 }
 
 func TestSessionCounterPersistsAcrossLoads(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.json")
+	path := t.TempDir()
 
 	sm := LoadSessionManager(path, config.ModelRef{Provider: "p", Model: "m"})
 	for range 3 {
@@ -141,6 +143,7 @@ func TestSessionCounterPersistsAcrossLoads(t *testing.T) {
 	if err := sm.Save(); err != nil {
 		t.Fatal(err)
 	}
+	closeManager(t, sm)
 
 	sm2 := LoadSessionManager(path, config.ModelRef{Provider: "p", Model: "m"})
 	conv := sm2.New("another")
@@ -215,60 +218,24 @@ func TestLoadSystemPromptCapsAt160Lines(t *testing.T) {
 	}
 }
 
-func TestEnsureActiveConversation(t *testing.T) {
-	conv := func(ids ...string) map[string]*Conversation {
-		m := map[string]*Conversation{}
-		for _, id := range ids {
-			m[id] = &Conversation{ID: id}
-		}
-		return m
-	}
-	tests := []struct {
-		name       string
-		active     string
-		convs      map[string]*Conversation
-		order      []string
-		wantOK     bool
-		wantActive string
-	}{
-		{"valid active id is kept", "1", conv("1", "2"), []string{"1", "2"}, true, "1"},
-		{"missing active id falls back to the last ordered", "ghost", conv("1", "2"), []string{"1", "2"}, true, "2"},
-		{"empty active id falls back to the last ordered", "", conv("1", "2", "3"), []string{"2", "3", "1"}, true, "1"},
-		{"nothing to activate", "ghost", conv(), nil, false, "ghost"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			sm := &SessionManager{ActiveID: tc.active, Conversations: tc.convs, Order: tc.order}
-			if got := sm.ensureActiveConversation(); got != tc.wantOK || sm.ActiveID != tc.wantActive {
-				t.Errorf("ensureActiveConversation = %v, active %q; want %v, %q", got, sm.ActiveID, tc.wantOK, tc.wantActive)
-			}
-		})
-	}
-}
-
+// TestLoadSessionManagerRecoversInvalidActiveID checks that a last-active ID naming no
+// conversation opens the most recently changed one instead.
 func TestLoadSessionManagerRecoversInvalidActiveID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	saved := `{"activeId":"ghost","order":["1","2"],"counter":2,"defaultModel":{"provider":"p","model":"m"},
-		"conversations":{"1":{"id":"1","name":"one","model":{"provider":"p","model":"m"}},
-		"2":{"id":"2","name":"two","model":{"provider":"p","model":"m"}}}}`
-	if err := os.WriteFile(path, []byte(saved), 0o600); err != nil {
-		t.Fatal(err)
+	dir := writeSessionDir(t, `{"activeId":"ghost","defaultModel":{"provider":"p","model":"m"}}`, map[string]string{
+		"1": `{"id":"1","name":"one","model":{"provider":"p","model":"m"},"updatedAt":"2026-01-02T00:00:00Z"}`,
+		"2": `{"id":"2","name":"two","model":{"provider":"p","model":"m"},"updatedAt":"2026-01-01T00:00:00Z"}`,
+	})
+	sm := LoadSessionManager(dir, config.ModelRef{Provider: "x", Model: "y"})
+	if sm.ActiveID != "1" || sm.Active().Name != "one" || len(sm.Conversations) != 2 {
+		t.Errorf("active=%q conversations=%d, want the most recently changed conversation", sm.ActiveID, len(sm.Conversations))
 	}
-	sm := LoadSessionManager(path, config.ModelRef{Provider: "x", Model: "y"})
-	if sm.ActiveID != "2" || sm.Active().Name != "two" || len(sm.Conversations) != 2 {
-		t.Errorf("active=%q conversations=%d, want the last ordered conversation", sm.ActiveID, len(sm.Conversations))
-	}
-	// Conversations missing from the order are appended rather than lost.
-	saved = strings.Replace(saved, `"order":["1","2"]`, `"order":["2","ghost"]`, 1)
-	os.WriteFile(path, []byte(saved), 0o600)
-	sm = LoadSessionManager(path, config.ModelRef{})
-	if !slices.Equal(sm.Order, []string{"2", "1"}) || sm.ActiveID != "1" {
-		t.Errorf("order=%v active=%q, want [2 1] and 1", sm.Order, sm.ActiveID)
+	if names := []string{sm.List()[0].Name, sm.List()[1].Name}; !slices.Equal(names, []string{"one", "two"}) {
+		t.Errorf("list = %v, want creation order, then IDs", names)
 	}
 }
 
 func TestConversationNotFoundErrors(t *testing.T) {
-	sm := NewSessionManager(config.ModelRef{Provider: "p", Model: "m"})
+	sm := LoadSessionManager("", config.ModelRef{Provider: "p", Model: "m"})
 	_, resumeErr := sm.Resume("ghost")
 	cases := map[string]struct {
 		err  error
@@ -291,7 +258,7 @@ func TestConversationNotFoundErrors(t *testing.T) {
 // Save writes conversations as they are: no tool output is shortened, in the active conversation
 // or any other.
 func TestSaveKeepsToolOutput(t *testing.T) {
-	sm := LoadSessionManager(filepath.Join(t.TempDir(), "sessions.json"), config.ModelRef{Provider: "p", Model: "m"})
+	sm := LoadSessionManager(t.TempDir(), config.ModelRef{Provider: "p", Model: "m"})
 	bulky := strings.Repeat("output line\n", 100)
 	fill := func(c *Conversation) {
 		c.Messages = append(c.Messages,
@@ -316,7 +283,7 @@ func TestSaveKeepsToolOutput(t *testing.T) {
 // Credentials in the conversation are saved as they are, so a resumed conversation is the one the
 // model produced.
 func TestSaveKeepsCredentials(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
+	path := t.TempDir()
 	sm := LoadSessionManager(path, config.ModelRef{Provider: "p", Model: "m"})
 	const key = "sk-proj-0123456789abcdefghijklmn"
 	conv := sm.Active()
@@ -324,6 +291,7 @@ func TestSaveKeepsCredentials(t *testing.T) {
 	if err := sm.Save(); err != nil {
 		t.Fatal(err)
 	}
+	closeManager(t, sm)
 	if got := LoadSessionManager(path, config.ModelRef{}).Active().Messages; got[len(got)-1].Content != "OPENAI_API_KEY="+key {
 		t.Errorf("loaded tool output = %q, want it as saved", got[len(got)-1].Content)
 	}
@@ -332,7 +300,7 @@ func TestSaveKeepsCredentials(t *testing.T) {
 // TestAutoTitledFollowsNameSource checks that an automatic title is marked as such and that a user
 // rename clears the mark.
 func TestAutoTitledFollowsNameSource(t *testing.T) {
-	sm := LoadSessionManager(filepath.Join(t.TempDir(), "sessions.json"), config.ModelRef{Provider: "dummy", Model: "model-a"})
+	sm := LoadSessionManager(t.TempDir(), config.ModelRef{Provider: "dummy", Model: "model-a"})
 	conv := sm.Active()
 	if conv.AutoTitled {
 		t.Fatalf("a new conversation is marked as auto-titled")
@@ -353,5 +321,35 @@ func TestAutoTitledFollowsNameSource(t *testing.T) {
 	conv.MaybeAutoTitle("another prompt")
 	if conv.Name != "My name" || conv.AutoTitled {
 		t.Errorf("MaybeAutoTitle replaced a user name: Name=%q AutoTitled=%v", conv.Name, conv.AutoTitled)
+	}
+}
+
+// TestSessionKeepsToolResultImages checks that a tool result's picture references survive a
+// save and a load, and that the file holds the reference, not the picture.
+func TestSessionKeepsToolResultImages(t *testing.T) {
+	path := t.TempDir()
+	sm := LoadSessionManager(path, config.ModelRef{Provider: "p", Model: "m"})
+	img := chat.Image{File: strings.Repeat("ab", 32) + ".png", MediaType: "image/png", Width: 900, Height: 2000, Source: "shot.png"}
+	sm.Active().Messages = append(sm.Active().Messages, chat.Message{Role: "tool", ToolCallID: "c1", Content: "shot.png", Images: []chat.Image{img}})
+	if err := sm.Save(); err != nil {
+		t.Fatal(err)
+	}
+	closeManager(t, sm)
+	data, _ := os.ReadFile(filepath.Join(path, "conversations", sm.ActiveID+".json"))
+	if !strings.Contains(string(data), `"images":[{"file":"`+img.File+`","media_type":"image/png","width":900,"height":2000,"source":"shot.png"}]`) {
+		t.Errorf("saved file lacks the image reference:\n%s", data)
+	}
+	msgs := LoadSessionManager(path, config.ModelRef{Provider: "p", Model: "m"}).List()[0].Messages
+	if got := msgs[len(msgs)-1].Images; len(got) != 1 || got[0] != img {
+		t.Errorf("loaded images = %+v, want %+v", got, img)
+	}
+}
+
+// closeManager releases sm's lock on its conversation, as hmj does when it exits, so a manager
+// loaded next in the same test can open it.
+func closeManager(t *testing.T, sm *SessionManager) {
+	t.Helper()
+	if err := sm.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

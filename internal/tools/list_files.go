@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -29,9 +30,10 @@ func (t *ListFilesTool) Definition() chat.ToolDefinition {
 		Type: "function",
 		Function: chat.FunctionDefinition{
 			Name:        "list_files",
-			Description: "List files and directories within a given path. Skips .git directory and respects .gitignore rules.",
+			Description: "List files and directories within a given path. Skips .git directory and respects .gitignore rules. With pattern, lists only the files it matches, at any depth.",
 			Parameters: map[string]any{
-				"type": "object",
+				"type":             "object",
+				chat.PropertyOrder: []string{"path", "recursive", "max_depth", "pattern"},
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
@@ -43,7 +45,11 @@ func (t *ListFilesTool) Definition() chat.ToolDefinition {
 					},
 					"max_depth": map[string]any{
 						"type":        "integer",
-						"description": "Maximum directory depth when recursive is true (default 4).",
+						"description": "Maximum directory depth when recursive is true (default 4, or no limit with pattern).",
+					},
+					"pattern": map[string]any{
+						"type":        "string",
+						"description": "Optional glob the files listed must match: a name pattern such as `*.go` or `*.{ts,tsx}`, or, with a '/', a path pattern relative to path such as `src/**/*Test.kt`.",
 					},
 				},
 				"required":             []string{},
@@ -57,6 +63,7 @@ type listFilesInput struct {
 	Path      string `json:"path"`
 	Recursive *bool  `json:"recursive"`
 	MaxDepth  int    `json:"max_depth"`
+	Pattern   string `json:"pattern"`
 }
 
 type gitIgnoreRule struct {
@@ -376,7 +383,10 @@ type listFilesWalker struct {
 	matcher   *gitIgnoreMatcher
 	recursive bool
 	maxDepth  int
-	results   []string
+	// glob, when set, is the test files must pass, given their path relative to walkPath;
+	// directories are then not listed.
+	glob    func(string) bool
+	results []string
 }
 
 // visit is the fs.WalkDirFunc for list_files. It skips .git and ignored paths and
@@ -443,7 +453,9 @@ func (w *listFilesWalker) visitDir(normPath, rel string) error {
 	if w.recursive && depth >= w.maxDepth {
 		return filepath.SkipDir
 	}
-	w.results = append(w.results, rel+"/")
+	if w.glob == nil {
+		w.results = append(w.results, rel+"/")
+	}
 	return nil
 }
 
@@ -456,19 +468,23 @@ func (w *listFilesWalker) visitFile(normPath, rel string) bool {
 	if !w.recursive && depth > 1 {
 		return false
 	}
+	if w.glob != nil && !w.glob(rel) {
+		return false
+	}
 	w.results = append(w.results, rel)
 	return true
 }
 
 // walkListFiles walks relRoot within fsys and returns the collected entries and
 // whether the result cap truncated the listing.
-func walkListFiles(fsys fs.FS, relRoot string, matcher *gitIgnoreMatcher, recursive bool, maxDepth int) ([]string, bool, error) {
+func walkListFiles(fsys fs.FS, relRoot string, matcher *gitIgnoreMatcher, recursive bool, maxDepth int, glob func(string) bool) ([]string, bool, error) {
 	w := &listFilesWalker{
 		fsys:      fsys,
 		walkPath:  relRoot,
 		matcher:   matcher,
 		recursive: recursive,
 		maxDepth:  maxDepth,
+		glob:      glob,
 		results:   make([]string, 0, 64),
 	}
 	err := fs.WalkDir(fsys, relRoot, w.visit)
@@ -499,6 +515,12 @@ func (t *ListFilesTool) Execute(ctx context.Context, argsJSON string) (string, e
 	in, err := parseListFilesArgs(argsJSON)
 	if err != nil {
 		return "", err
+	}
+	var glob func(string) bool
+	if in.Pattern != "" {
+		if glob, err = compilePathGlob(in.Pattern); err != nil {
+			return "", err
+		}
 	}
 
 	absRoot, err := ResolvePath(in.Path)
@@ -532,8 +554,11 @@ func (t *ListFilesTool) Execute(ctx context.Context, argsJSON string) (string, e
 	}
 
 	maxDepth := cmp.Or(in.MaxDepth, 4)
+	if glob != nil && in.MaxDepth == 0 {
+		maxDepth = math.MaxInt // a pattern such as **/*Test.kt looks at every depth
+	}
 
-	results, truncated, err := walkListFiles(fsys, relRoot, matcher, recursive, maxDepth)
+	results, truncated, err := walkListFiles(fsys, relRoot, matcher, recursive, maxDepth, glob)
 	if err != nil {
 		return "", err
 	}

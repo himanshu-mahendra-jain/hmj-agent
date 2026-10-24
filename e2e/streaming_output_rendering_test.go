@@ -14,7 +14,7 @@ import (
 func assertNotHijacked(t *testing.T, s *session, marker string) {
 	t.Helper()
 	v := s.ScreenState()
-	if v.RowOf("[model: mock/model-a]") < 0 {
+	if v.RowOf("[model: mock/model-a · effort: default]") < 0 {
 		t.Errorf("the screen was cleared:\n%s", v.Dump())
 	}
 	for _, osc := range v.oscs {

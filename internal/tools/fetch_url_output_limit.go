@@ -47,7 +47,7 @@ func fetchResult(targetURL, text string, notes []string, maxLines int) string {
 func limitFetchedText(targetURL, text string, maxLines int) string {
 	lines := strings.Split(text, "\n")
 	shown := lines[:min(len(lines), maxLines)]
-	kept, lineCut := capLinesToBytes(shown, MaxFetchOutputBytes)
+	kept, lineCut := capLinesToBytes(shown, MaxFetchOutputBytes, 0)
 	if len(kept) == len(lines) && !lineCut {
 		return text
 	}

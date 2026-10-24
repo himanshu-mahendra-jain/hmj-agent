@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,10 @@ func TestFormatDuration(t *testing.T) {
 		{1 * time.Second, "1.0s"},
 		{1500 * time.Millisecond, "1.5s"},
 		{10 * time.Second, "10.0s"},
+		{59900 * time.Millisecond, "59.9s"},
+		{90 * time.Second, "1m30s"},
+		{866 * time.Second, "14m26s"},
+		{8400 * time.Second, "2h20m"},
 	}
 	for _, tc := range cases {
 		if got := FormatDuration(tc.d); got != tc.want {
@@ -68,7 +73,7 @@ func TestEnsureTrailingNewline(t *testing.T) {
 // existing ones, which stay available in /resume.
 func TestHandleNewKeepsEarlierConversations(t *testing.T) {
 	modelRef := config.ModelRef{Provider: "dummy", Model: "model-a"}
-	sm := session.NewSessionManager(modelRef)
+	sm := session.LoadSessionManager("", modelRef)
 	if len(sm.List()) != 1 {
 		t.Fatalf("expected 1 conversation at start, got %d", len(sm.List()))
 	}
@@ -98,10 +103,27 @@ func TestNewRunnerWithTools(t *testing.T) {
 }
 
 func TestPrintExpandedToolResult(t *testing.T) {
-	// Should not panic on edge cases
-	printExpandedToolResult("read_file", "[empty file]")
-	printExpandedToolResult("read_file", "line 1\nline 2", 150*time.Millisecond)
-	printExpandedToolResult("write_file", "")
-	printExpandedToolResult("write_file", "error: something went wrong", 50*time.Millisecond)
-	printExpandedToolResult("generic_tool", "output row 1\noutput row 2")
+	for _, tc := range []struct {
+		tool, output string
+		d            time.Duration
+		want         []string
+	}{
+		{"read_file", "[empty file]", 0, []string{"[empty file]"}},
+		{"read_file", "line 1\nline 2", 150 * time.Millisecond, []string{"line 1", "line 2", "150ms"}},
+		{"write_file", "error: something went wrong", 50 * time.Millisecond, []string{"50ms"}},
+		{"generic_tool", "output row 1\noutput row 2", 0, []string{"output row 1", "output row 2"}},
+	} {
+		out := captureOutput(t, func() { printExpandedToolResult(tc.tool, tc.output, tc.d) })
+		for _, w := range tc.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s %q: output %q lacks %q", tc.tool, tc.output, out, w)
+			}
+		}
+	}
+	if errOut := captureStderr(t, func() { printExpandedToolResult("write_file", "error: something went wrong") }); !strings.Contains(errOut, "something went wrong") {
+		t.Errorf("an error result is not on stderr: %q", errOut)
+	}
+	if out := captureOutput(t, func() { printExpandedToolResult("write_file", "") }); strings.Contains(out, "\n\n\n") {
+		t.Errorf("an empty result printed blank lines: %q", out)
+	}
 }

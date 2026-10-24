@@ -75,6 +75,10 @@ func (c *Compaction) Finish() {
 	if err == nil {
 		err = c.conv.ApplyCompaction(c.result, c.upTo)
 	}
+	var historyErr error
+	if errors.Is(err, session.ErrHistoryNotSaved) {
+		historyErr, err = err, nil
+	}
 	if err != nil {
 		reportCompactionError(err)
 		return
@@ -82,6 +86,10 @@ func (c *Compaction) Finish() {
 	after := c.conv.EstimateTokens()
 	logging.L().Info("conversation compacted", "model", c.conv.Model.Model, "tokens_before", c.tokens, "tokens_after", after)
 	fmt.Println(theme.Muted(fmt.Sprintf("[compacted the conversation: ~%s → ~%s tokens]", FormatNumber(c.tokens), FormatNumber(after))))
+	if historyErr != nil {
+		logging.L().Warn("earlier turns not archived", "error", historyErr.Error())
+		fmt.Println(theme.Caution(fmt.Sprintf("[%v]", historyErr)))
+	}
 }
 
 // reportCompactionError tells the user the conversation was not compacted and why.
@@ -92,5 +100,5 @@ func reportCompactionError(err error) {
 		return
 	}
 	logging.L().Warn("conversation not compacted", "error", err.Error())
-	fmt.Println(theme.Caution(fmt.Sprintf("[could not compact the conversation: %v; it is tried again after the next turn]", err)))
+	fmt.Println(theme.Caution(fmt.Sprintf("[could not compact the conversation: %s; it is tried again after the next turn]", theme.Sanitize(err.Error()))))
 }

@@ -113,9 +113,9 @@ func TestScaleColumnWidths(t *testing.T) {
 
 // A reply that ends in a table row without a trailing newline must still print that row:
 // Flush used to buffer it as a table line without opening the table.
-func TestTableStreamerFlushKeepsFinalTableRow(t *testing.T) {
+func TestMarkdownStreamerFlushKeepsFinalTableRow(t *testing.T) {
 	var out strings.Builder
-	s := NewTableStreamer(func(text string) { out.WriteString(text) })
+	s := NewMarkdownStreamer(func(text string) { out.WriteString(text) })
 	s.Write("| only | row |")
 	s.Flush()
 	if !strings.Contains(out.String(), "only") || !strings.Contains(out.String(), "row") {
@@ -123,7 +123,7 @@ func TestTableStreamerFlushKeepsFinalTableRow(t *testing.T) {
 	}
 
 	out.Reset()
-	s = NewTableStreamer(func(text string) { out.WriteString(text) })
+	s = NewMarkdownStreamer(func(text string) { out.WriteString(text) })
 	s.Write("| a | b |\n|---|---|\n| 1 | 2 |")
 	s.Flush()
 	if !strings.Contains(out.String(), "1") || !strings.Contains(out.String(), "2") {

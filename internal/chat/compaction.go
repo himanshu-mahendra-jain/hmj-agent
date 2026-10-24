@@ -123,7 +123,11 @@ func (c *Client) Compact(ctx context.Context, ref config.ModelRef, messages []Me
 	if err != nil {
 		return Message{}, err
 	}
-	api, _, _ := c.DetectWireAPI(ctx, ref.Provider, provider)
+	// As for a turn, only a cancelled detection stops the request (see streamChat).
+	api, _, err := c.DetectWireAPI(ctx, ref.Provider, provider)
+	if err != nil && ctx.Err() != nil {
+		return Message{}, err
+	}
 	var compacted Message
 	switch api {
 	case config.APIAnthropic:

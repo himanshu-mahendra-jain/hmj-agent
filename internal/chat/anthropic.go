@@ -16,9 +16,10 @@ import (
 )
 
 // DefaultAnthropicMaxTokens is the output limit applied to Anthropic requests when the model does
-// not set maxOutputTokens. Anthropic requires an explicit max_tokens field; this default is large
-// enough that a whole file written by write_file is not cut off.
-const DefaultAnthropicMaxTokens = 32000
+// not set maxOutputTokens. Anthropic requires an explicit max_tokens field and recommends 64000
+// for agentic work: a response cut off at the limit fails the step, and a higher limit costs
+// nothing until it is used.
+const DefaultAnthropicMaxTokens = 64000
 
 // AnthropicVersion is the Messages API version sent in the anthropic-version header. The changes
 // it brought over 2023-06-01 (no sampling parameters, no document blocks in assistant messages,
@@ -73,8 +74,11 @@ type anthropicContent struct {
 	Name      string `json:"name,omitempty"`
 	Input     any    `json:"input,omitzero"`
 	ToolUseID string `json:"tool_use_id,omitempty"`
-	// Content is a tool result's output, or a compaction block's summary.
-	Content string `json:"content,omitempty"`
+	// Content is a tool result's output, as a string or, when it carries images, a list of
+	// text and image blocks; or a compaction block's summary.
+	Content any `json:"content,omitzero"`
+	// Source is an image block's picture.
+	Source *anthropicImageSource `json:"source,omitempty"`
 	// IsError marks a tool_result whose tool failed.
 	IsError bool `json:"is_error,omitzero"`
 	// Thinking is a pointer so an empty thinking text is still sent.
@@ -85,6 +89,36 @@ type anthropicContent struct {
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
+type anthropicImageSource struct {
+	Type      string `json:"type"` // "base64"
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// anthropicToolResultContent is a tool result's content: its text, or with images, a list of
+// a text block and image blocks. A picture that cannot be loaded becomes a text note.
+func anthropicToolResultContent(msg Message) any {
+	if len(msg.Images) == 0 {
+		if msg.Content == "" {
+			return nil
+		}
+		return msg.Content
+	}
+	var blocks []anthropicContent
+	if msg.Content != "" {
+		blocks = append(blocks, anthropicContent{Type: "text", Text: msg.Content})
+	}
+	for _, img := range msg.Images {
+		data, note := img.base64Data()
+		if note != "" {
+			blocks = append(blocks, anthropicContent{Type: "text", Text: note})
+			continue
+		}
+		blocks = append(blocks, anthropicContent{Type: "image", Source: &anthropicImageSource{Type: "base64", MediaType: img.MediaType, Data: data}})
+	}
+	return blocks
+}
+
 type anthropicCacheControl struct {
 	Type string `json:"type"`
 }
@@ -92,11 +126,13 @@ type anthropicCacheControl struct {
 var ephemeralCache = &anthropicCacheControl{Type: "ephemeral"}
 
 type anthropicTool struct {
-	Name         string                 `json:"name"`
-	Description  string                 `json:"description,omitempty"`
-	InputSchema  map[string]any         `json:"input_schema"`
-	Strict       bool                   `json:"strict,omitzero"`
-	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	InputSchema Schema `json:"input_schema"`
+	// EagerInputStreaming sends the tool's input as the model writes it, without the server
+	// buffering and validating each value first.
+	EagerInputStreaming bool                   `json:"eager_input_streaming,omitzero"`
+	CacheControl        *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 // isThinkingBlock reports whether an Anthropic content block type is a reasoning block, which
@@ -131,7 +167,7 @@ func convertMessagesToAnthropic(messages []Message) (system string, msgs []anthr
 			appendBlock("user", anthropicContent{
 				Type:      "tool_result",
 				ToolUseID: msg.ToolCallID,
-				Content:   msg.Content,
+				Content:   anthropicToolResultContent(msg),
 				IsError:   strings.HasPrefix(msg.Content, "error:"),
 			})
 		case "assistant":
@@ -173,9 +209,12 @@ func anthropicToolInput(arguments string) map[string]any {
 	return v
 }
 
-// convertToolsToAnthropic advertises each tool with strict schema validation. Strict mode requires
-// the schema to be closed (additionalProperties: false) and to list its required properties, which
-// the tool definitions in internal/tools guarantee.
+// convertToolsToAnthropic advertises the tools without strict. A strict tool's arguments must be
+// written in the order its schema lists them, with optional ones skipped but never moved, and
+// Claude does not keep to one order: grep calls whose model meant to write output_mode and path
+// first, and its long pattern last, came out as {"pattern": "x", "output_mode": ...}, the path and
+// the real pattern lost, in 23 of 32 replays and 0 of 27 without strict. Each tool checks its own
+// arguments, as it does for every provider.
 func convertToolsToAnthropic(tools []ToolDefinition) []anthropicTool {
 	if len(tools) == 0 {
 		return nil
@@ -187,10 +226,10 @@ func convertToolsToAnthropic(tools []ToolDefinition) []anthropicTool {
 			schema = map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
 		}
 		res = append(res, anthropicTool{
-			Name:        t.Function.Name,
-			Description: t.Function.Description,
-			InputSchema: schema,
-			Strict:      true,
+			Name:                t.Function.Name,
+			Description:         t.Function.Description,
+			InputSchema:         schema,
+			EagerInputStreaming: t.StreamArguments,
 		})
 	}
 	return res
@@ -260,6 +299,8 @@ type anthropicBlockAcc struct {
 
 type anthropicAccumulator struct {
 	startTime time.Time
+	// toolProgress is told about each tool call as the model writes it.
+	toolProgress toolProgress
 	// firstToken is when output was first shown, which decides whether a retry would repeat it.
 	// firstOutput is when the first content block began, including a tool call or thinking that
 	// shows no text; it times the response.
@@ -377,6 +418,7 @@ func (a *anthropicAccumulator) handleContentBlockStart(ev *anthropicEvent) {
 		a.toolCallsByIndex[ev.Index] = tc
 		a.toolArgsByIndex[ev.Index] = &strings.Builder{}
 		a.toolCallIndices = append(a.toolCallIndices, ev.Index)
+		a.toolProgress.report(tc.Function.Name, 0)
 	case "thinking", "redacted_thinking":
 		acc := &anthropicBlockAcc{block: Block{
 			Type:      ev.ContentBlock.Type,
@@ -425,6 +467,7 @@ func (a *anthropicAccumulator) handleContentBlockDelta(ev *anthropicEvent, onRea
 	case "input_json_delta":
 		if b, ok := a.toolArgsByIndex[ev.Index]; ok {
 			b.WriteString(ev.Delta.PartialJSON)
+			a.toolProgress.report(a.toolCallsByIndex[ev.Index].Function.Name, b.Len())
 		}
 	}
 }
@@ -544,13 +587,6 @@ func (a *anthropicAccumulator) result() (Message, *TokenUsage) {
 }
 
 // anthropicRequestFor builds the Messages API payload for one turn.
-// marshalAnthropicRequest encodes the Messages request body with map keys sorted. encoding/json/v2
-// otherwise walks maps in random order, so a tool's schema changed key order from run to run, and
-// the bytes the API caches changed with it.
-func marshalAnthropicRequest(model config.Model, messages []Message, tools []ToolDefinition) ([]byte, error) {
-	return encodeRequestBody(anthropicRequestFor(model, messages, tools))
-}
-
 func anthropicRequestFor(model config.Model, messages []Message, tools []ToolDefinition) anthropicRequest {
 	systemPrompt, anthropicMsgs := convertMessagesToAnthropic(messages)
 	maxTokens := DefaultAnthropicMaxTokens
@@ -653,6 +689,7 @@ func (c *Client) sendAnthropic(
 
 	startTime := time.Now()
 	acc := newAnthropicAccumulator(startTime)
+	acc.toolProgress = toolProgressFrom(ctx)
 	retryAfter, retryable, err := c.doStream(ctx, req, func(eventType, data string) error {
 		return acc.handle(eventType, data, onReasoning, onDelta)
 	}, func() bool { return !acc.firstToken.IsZero() })

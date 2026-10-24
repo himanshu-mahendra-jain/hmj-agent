@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -109,6 +108,7 @@ func TestHealthDetailsAndLatencyLabels(t *testing.T) {
 		{"61 runes truncated", chat.ModelHealthResult{Status: chat.StatusFailed, Details: long}, strings.Repeat("e", 57) + "..."},
 		{"truncates by rune not byte", chat.ModelHealthResult{Status: chat.StatusAuthError, Details: cjk}, strings.Repeat("日", 57) + "..."},
 		{"empty details", chat.ModelHealthResult{Status: chat.StatusTimeout}, ""},
+		{"escapes and line breaks dropped", chat.ModelHealthResult{Status: chat.StatusFailed, Details: "HTTP 500:\x1b]52;c;eA==\x07 bad\n\x1b[2Jgateway"}, "HTTP 500: bad gateway"},
 	}
 	for _, tc := range tests {
 		if got := healthDetailsLabel(tc.r); got != tc.want {
@@ -128,7 +128,7 @@ func TestHealthDetailsAndLatencyLabels(t *testing.T) {
 
 func newResumeManager(t *testing.T, names ...string) (*session.SessionManager, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "sessions.json")
+	path := t.TempDir()
 	model := config.ModelRef{Provider: "p", Model: "m"}
 	sm := session.LoadSessionManager(path, model)
 	sm.Rename(sm.ActiveID, names[0])

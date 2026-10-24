@@ -8,6 +8,7 @@ import (
 
 	"hmj-agent/internal/chat"
 	"hmj-agent/internal/session"
+	"hmj-agent/internal/terminal/theme"
 )
 
 // fakeClipboard puts an xclip on PATH that stores what it is given in a file, and returns
@@ -26,7 +27,7 @@ func fakeClipboard(t *testing.T) string {
 }
 
 // TestRunTurnActionCopiesAndViews checks every action of the /history turn browser: what
-// lands on the clipboard and what is printed.
+// lands on the clipboard, without the response's escape sequence, and what is printed.
 func TestRunTurnActionCopiesAndViews(t *testing.T) {
 	turn := &Turn{Index: 2, Prompt: "why?", Response: "because\x1b[2J"}
 	cases := []struct {
@@ -34,9 +35,9 @@ func TestRunTurnActionCopiesAndViews(t *testing.T) {
 		clipboard string // "" when nothing is copied
 		printed   string
 	}{
-		{"copy_output", "because\x1b[2J", "copied AI output of turn [2/3] to clipboard"},
+		{"copy_output", "because", "copied AI output of turn [2/3] to clipboard"},
 		{"copy_prompt", "why?", "copied prompt of turn [2/3] to clipboard"},
-		{"copy_both", "## User\n\nwhy?\n\n## Assistant\n\nbecause\x1b[2J\n", "copied full turn [2/3] to clipboard (Markdown)"},
+		{"copy_both", "## User\n\nwhy?\n\n## Assistant\n\nbecause\n", "copied full turn [2/3] to clipboard (Markdown)"},
 		{"view", "", "> you:"},
 	}
 	for _, tc := range cases {
@@ -147,7 +148,7 @@ func TestExtractTurnsNamesUnmatchedToolResults(t *testing.T) {
 		{Role: "tool", ToolCallID: "c1", Content: "a.go\n"},
 		{Role: "tool", ToolCallID: "orphan", Content: " lost "},
 	}}
-	turns := ExtractTurns(conv)
+	turns := turnsOf(conv.Messages)
 	if len(turns) != 1 {
 		t.Fatalf("turns = %+v", turns)
 	}
@@ -155,7 +156,91 @@ func TestExtractTurnsNamesUnmatchedToolResults(t *testing.T) {
 	if turns[0].Response != want {
 		t.Errorf("response = %q, want %q", turns[0].Response, want)
 	}
-	if ExtractTurns(nil) != nil {
-		t.Error("ExtractTurns(nil) should be nil")
+}
+
+// TestHistoryShowsCompactedTurns checks that /history lists the turns a compaction replaced,
+// marked as compacted, before the turns since, numbered as one list, and that a compacted turn
+// can be viewed. The compaction itself adds nothing to the last compacted turn.
+func TestHistoryShowsCompactedTurns(t *testing.T) {
+	conv := &session.Conversation{Messages: []chat.Message{
+		{Role: "system", Content: "s"},
+		{Role: "user", Content: "question 1"}, {Role: "assistant", Content: "answer 1"},
+		{Role: "user", Content: "question 2"}, {Role: "assistant", Content: "answer 2"},
+	}}
+	compaction := chat.Message{Role: "assistant", Blocks: []chat.Block{{Type: chat.BlockSummary, Text: "summary"}}}
+	if err := conv.ApplyCompaction(compaction, len(conv.Messages)); err != nil {
+		t.Fatal(err)
+	}
+	conv.Messages = append(conv.Messages, chat.Message{Role: "user", Content: "question 3"}, chat.Message{Role: "assistant", Content: "answer 3"})
+
+	turns, err := HistoryTurns(conv)
+	if err != nil || len(turns) != 3 {
+		t.Fatalf("HistoryTurns = %+v (%v), want 3 turns", turns, err)
+	}
+	if !turns[0].Compacted || !turns[1].Compacted || turns[2].Compacted || turns[2].Index != 3 || turns[1].Response != "answer 2" {
+		t.Errorf("turns = %+v, want turns 1 and 2 compacted and turn 3 not", turns)
+	}
+	items := buildTurnItems(turns)
+	if items[0].Text != "[1/3] (compacted) question 1" || items[2].Text != "[3/3] question 3" {
+		t.Errorf("labels = %q, %q", items[0].Text, items[2].Text)
+	}
+	if got := turnsOf(conv.Messages); len(got) != 1 || got[0].Prompt != "question 3" {
+		t.Errorf("turnsOf = %+v, want only the turn in the conversation", got)
+	}
+
+	out := captureOutput(t, func() {
+		if err := HandleHistory(conv, lines("1\n4\n")); err != nil {
+			t.Errorf("HandleHistory: %v", err)
+		}
+	})
+	if !strings.Contains(out, "question 1") || !strings.Contains(out, "answer 1") {
+		t.Errorf("viewing the compacted turn printed %q", out)
+	}
+}
+
+// TestHistoryReportsAnUnreadableArchive checks that /history says when the compacted turns
+// cannot be read and still lists the turns since.
+func TestHistoryReportsAnUnreadableArchive(t *testing.T) {
+	conv := &session.Conversation{
+		HistoryPath:   filepath.Join(t.TempDir(), "missing.jsonl"),
+		ArchivedBytes: 10,
+		Messages:      []chat.Message{{Role: "user", Content: "question 3"}, {Role: "assistant", Content: "answer 3"}},
+	}
+	out := captureOutput(t, func() {
+		if err := HandleHistory(conv, lines("1\n4\n")); err != nil {
+			t.Errorf("HandleHistory: %v", err)
+		}
+	})
+	if !strings.Contains(out, "[could not read all the turns before the compaction:") || !strings.Contains(out, "answer 3") {
+		t.Errorf("output %q should report the archive and show the live turn", out)
+	}
+}
+
+// TestHistoryViewRendersOnlyTheModelsText checks that viewing a turn renders the model's
+// Markdown but shows tool calls and results as written, so a "# comment" in a file it read is
+// not drawn as a heading.
+func TestHistoryViewRendersOnlyTheModelsText(t *testing.T) {
+	enabled := theme.Enabled()
+	theme.SetEnabled(true)
+	t.Cleanup(func() { theme.SetEnabled(enabled) })
+	conv := &session.Conversation{Messages: []chat.Message{
+		{Role: "user", Content: "read it"},
+		{Role: "assistant", Content: "**Reading**", ToolCalls: []chat.ToolCall{{ID: "c1", Function: chat.ToolCallFunction{Name: "read_file", Arguments: `{"path":"x.sh"}`}}}},
+		{Role: "tool", ToolCallID: "c1", Content: "# not a heading\n- not a bullet"},
+		{Role: "assistant", Content: "- done"},
+	}}
+	turns := turnsOf(conv.Messages)
+	if len(turns) != 1 {
+		t.Fatalf("turns = %+v", turns)
+	}
+	got := turns[0].viewText()
+	if !strings.Contains(got, theme.Markdown("Reading", theme.MarkdownBold)) || !strings.Contains(got, "• done") {
+		t.Errorf("model text not rendered: %q", got)
+	}
+	if !strings.Contains(got, "# not a heading\n- not a bullet") {
+		t.Errorf("tool result changed: %q", got)
+	}
+	if strings.Contains(turns[0].Response, "\x1b") || !strings.Contains(turns[0].Response, "**Reading**") {
+		t.Errorf("Response, which is copied, should stay raw: %q", turns[0].Response)
 	}
 }

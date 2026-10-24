@@ -67,7 +67,7 @@ func TestNeedsCompactionNotForACompactionAlone(t *testing.T) {
 
 // TestApplyCompactionReplacesTheCompactedMessages checks that the compaction takes the place of
 // the messages it was made from, right after the system prompt, that messages appended since are
-// kept, and that the reported size is forgotten.
+// kept, that the reported size is forgotten, and that the conversation is marked as changed.
 func TestApplyCompactionReplacesTheCompactedMessages(t *testing.T) {
 	conv := chatTurns(3)
 	upTo := len(conv.Messages)
@@ -83,6 +83,9 @@ func TestApplyCompactionReplacesTheCompactedMessages(t *testing.T) {
 	}
 	if conv.LastPromptTokens != 0 || conv.TokenMarkIndex != 0 {
 		t.Errorf("reported size kept: %d at %d", conv.LastPromptTokens, conv.TokenMarkIndex)
+	}
+	if conv.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt not set by the compaction")
 	}
 	if got, want := conv.EstimateTokens(), (len("SYSTEM")+len("the summary")+len("newer"))/4; got != want {
 		t.Errorf("estimate after compaction = %d, want %d (the summary counted)", got, want)

@@ -57,7 +57,7 @@ func withTerminalSize(t *testing.T, cols int) {
 	t.Helper()
 	master, slave, err := openPTY()
 	if err != nil {
-		t.Skipf("PTY not available in environment: %v", err)
+		t.Fatalf("opening a PTY: %v", err)
 	}
 	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: uint16(cols)}); err != nil {
 		t.Fatal(err)

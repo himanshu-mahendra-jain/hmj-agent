@@ -16,12 +16,14 @@ func (t *WriteFileTool) Name() string { return "write_file" }
 
 func (t *WriteFileTool) Definition() chat.ToolDefinition {
 	return chat.ToolDefinition{
-		Type: "function",
+		Type:            "function",
+		StreamArguments: true, // a whole file can take tens of seconds to write
 		Function: chat.FunctionDefinition{
 			Name:        "write_file",
 			Description: "Create a new file or overwrite an existing file with the provided content. Automatically creates parent directories.",
 			Parameters: map[string]any{
-				"type": "object",
+				"type":             "object",
+				chat.PropertyOrder: []string{"path", "content"},
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",

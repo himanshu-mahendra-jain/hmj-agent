@@ -13,9 +13,10 @@ import (
 const (
 	// fetchCacheTTL is how long fetch_url answers a URL from its last fetch.
 	fetchCacheTTL = 15 * time.Minute
-	// maxCachedPages and maxCachedBytes bound the cache; the oldest pages go first.
+	// maxCachedPages and maxCachedBytes bound the cache; the oldest pages go first. A page
+	// over maxCachedBytes is not kept.
 	maxCachedPages = 64
-	maxCachedBytes = 64 * 1024 * 1024
+	maxCachedBytes = 16 * 1024 * 1024
 )
 
 // cachedPage is the text fetch_url made of a response, with the notes on how it was made.

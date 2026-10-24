@@ -68,26 +68,49 @@ type geminiText struct {
 	Text string `json:"text"`
 }
 
+// geminiResultPart is one part of a function_result: text, or an image with its data and type.
+type geminiResultPart struct {
+	Type     string `json:"type"` // "text" or "image"
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+}
+
+// geminiToolResult is a tool result's parts: its text, then its images. A picture that cannot
+// be loaded becomes a text note.
+func geminiToolResult(msg Message) []geminiResultPart {
+	parts := []geminiResultPart{{Type: "text", Text: msg.Content}}
+	for _, img := range msg.Images {
+		data, note := img.base64Data()
+		if note != "" {
+			parts = append(parts, geminiResultPart{Type: "text", Text: note})
+			continue
+		}
+		parts = append(parts, geminiResultPart{Type: "image", Data: data, MimeType: img.MediaType})
+	}
+	return parts
+}
+
 // geminiStep is one entry of the Interactions input list. Only the fields that
 // belong to its Type are set; the rest are omitted from the JSON.
 type geminiStep struct {
-	Type      string         `json:"type"`
-	Content   []geminiText   `json:"content,omitempty"`   // user_input, model_output
-	Summary   []geminiText   `json:"summary,omitempty"`   // thought
-	Signature string         `json:"signature,omitempty"` // thought, function_call
-	ID        string         `json:"id,omitempty"`        // function_call
-	Name      string         `json:"name,omitempty"`      // function_call, function_result
-	Arguments map[string]any `json:"arguments,omitzero"`  // function_call
-	CallID    string         `json:"call_id,omitempty"`   // function_result
-	Result    []geminiText   `json:"result,omitempty"`    // function_result
+	Type      string             `json:"type"`
+	Content   []geminiText       `json:"content,omitempty"`   // user_input, model_output
+	Summary   []geminiText       `json:"summary,omitempty"`   // thought
+	Signature string             `json:"signature,omitempty"` // thought, function_call
+	ID        string             `json:"id,omitempty"`        // function_call
+	Name      string             `json:"name,omitempty"`      // function_call, function_result
+	Arguments map[string]any     `json:"arguments,omitzero"`  // function_call
+	CallID    string             `json:"call_id,omitempty"`   // function_result
+	Result    []geminiResultPart `json:"result,omitempty"`    // function_result
 }
 
 // geminiTool declares a custom function. Parameters is a JSON Schema object.
 type geminiTool struct {
-	Type        string         `json:"type"`
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  Schema `json:"parameters"`
 }
 
 // convertMessagesToGemini maps the neutral message history onto Interactions
@@ -122,7 +145,7 @@ func convertMessagesToGemini(messages []Message) (system string, input []geminiS
 				Type:   "function_result",
 				CallID: msg.ToolCallID,
 				Name:   name,
-				Result: []geminiText{{Type: "text", Text: msg.Content}},
+				Result: geminiToolResult(msg),
 			})
 		case "assistant":
 			// Thought steps come first, in the order the model produced them.
@@ -282,7 +305,9 @@ type geminiStepState struct {
 }
 
 type geminiAccumulator struct {
-	startTime      time.Time
+	startTime time.Time
+	// toolProgress is told about each tool call as the model writes it.
+	toolProgress   toolProgress
 	firstToken     time.Time
 	contentBuilder strings.Builder
 	steps          map[int]*geminiStepState
@@ -358,6 +383,7 @@ func (a *geminiAccumulator) handle(eventType, data string, onReasoning, onDelta 
 		st.startArgs = ev.Step.Arguments
 		if st.kind == "function_call" {
 			a.markFirstToken()
+			a.toolProgress.report(st.name, 0)
 		}
 	case "step.delta":
 		if ev.Delta == nil {
@@ -384,6 +410,7 @@ func (a *geminiAccumulator) handle(eventType, data string, onReasoning, onDelta 
 			st.signature = ev.Delta.Signature
 		case "arguments_delta":
 			st.args.WriteString(ev.Delta.Arguments)
+			a.toolProgress.report(st.name, st.args.Len())
 		}
 	}
 	return nil
@@ -534,6 +561,7 @@ func (c *Client) streamGeminiOnce(
 
 	startTime := time.Now()
 	acc := newGeminiAccumulator(startTime)
+	acc.toolProgress = toolProgressFrom(ctx)
 	retryAfter, retryable, err := c.doStream(ctx, req, func(eventType, data string) error {
 		return acc.handle(eventType, data, onReasoning, onDelta)
 	}, func() bool { return !acc.firstToken.IsZero() })

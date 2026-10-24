@@ -44,34 +44,28 @@ const (
 
 // Palette maps each semantic role onto one or more SGR codes.
 type Palette struct {
-	Title     []string // banner
-	Muted     []string // metadata, footers, hints
-	Faint     []string // deep de-emphasis: rules, gutter separators
-	Prompt    []string // the user prompt marker
-	User      []string // replayed user messages
-	Accent    []string // selection markers, current model
-	Tool      []string // tool-call header (⚙ edit_file)
-	FilePath  []string // paths inside tool headers
-	LineNum   []string // gutter line numbers
-	GlyphAdd  []string
-	GlyphDel  []string
-	MarkAdd   []string // the "+" diff marker (bold in every palette)
-	MarkDel   []string // the "-" diff marker (bold in every palette)
-	Text      []string // foreground for streamed/verbatim text
-	Added     []string
-	Removed   []string
-	Modified  []string
-	Info      []string
-	Warn      []string
-	Error     []string
-	DiffRule  []string // diff header underline rule
-	Highlight []string // emphasis inside unchanged text (search hits, renames)
-	SelBG     []string // reverse-video emphasis inside removed/added lines
-	Link      []string // URLs
+	Title    []string // banner
+	Muted    []string // metadata, footers, hints
+	Faint    []string // deep de-emphasis: rules, gutter separators
+	Prompt   []string // the user prompt marker
+	User     []string // replayed user messages
+	Accent   []string // selection markers, current model
+	Tool     []string // tool-call header (⚙ edit_file)
+	FilePath []string // paths inside tool headers
+	GlyphAdd []string
+	MarkAdd  []string // the "+" diff marker (bold in every palette)
+	MarkDel  []string // the "-" diff marker (bold in every palette)
+	Text     []string // foreground for streamed/verbatim text
+	Added    []string
+	Removed  []string
+	Info     []string
+	Warn     []string
+	Error    []string
+	DiffRule []string // diff header underline rule
+	SelBG    []string // reverse-video emphasis inside removed/added lines
 
 	ThinkingParam []string // streamed model reasoning style
 
-	addedBlock   []string
 	removedBlock []string
 	addedRow     rowStyle
 	removedRow   rowStyle
@@ -90,34 +84,28 @@ type rowStyle struct {
 // DefaultPalette is the exact dark color scheme matching s.png.
 func DefaultPalette() Palette {
 	return Palette{
-		Title:     []string{paramBold, cPurple},
-		Muted:     []string{cMuted},
-		Faint:     []string{cLineNum},
-		Prompt:    []string{cBlue},
-		User:      []string{cBlue},
-		Accent:    []string{cBlue},
-		Tool:      []string{cYellow},
-		FilePath:  []string{paramUnderline, cBlue},
-		LineNum:   []string{cLineNum},
-		GlyphAdd:  []string{cGreen},
-		GlyphDel:  []string{cRed},
-		MarkAdd:   []string{paramBold, cGreen},
-		MarkDel:   []string{paramBold, cRed},
-		Text:      []string{cText},
-		Added:     []string{cGreen},
-		Removed:   []string{cRed},
-		Modified:  []string{cYellow},
-		Info:      []string{cPurple},
-		Warn:      []string{cOrange},
-		Error:     []string{cRed},
-		DiffRule:  []string{cLineNum},
-		Highlight: []string{cPurple},
-		SelBG:     []string{paramReverse},
-		Link:      []string{paramUnderline, cBlue},
+		Title:    []string{paramBold, cPurple},
+		Muted:    []string{cMuted},
+		Faint:    []string{cLineNum},
+		Prompt:   []string{cBlue},
+		User:     []string{cBlue},
+		Accent:   []string{cBlue},
+		Tool:     []string{cYellow},
+		FilePath: []string{paramUnderline, cBlue},
+		GlyphAdd: []string{cGreen},
+		MarkAdd:  []string{paramBold, cGreen},
+		MarkDel:  []string{paramBold, cRed},
+		Text:     []string{cText},
+		Added:    []string{cGreen},
+		Removed:  []string{cRed},
+		Info:     []string{cPurple},
+		Warn:     []string{cOrange},
+		Error:    []string{cRed},
+		DiffRule: []string{cLineNum},
+		SelBG:    []string{paramReverse},
 
 		ThinkingParam: []string{paramItalic, cThinking},
 
-		addedBlock:   []string{cGreen, cDarkBG},
 		removedBlock: []string{cRed, cDarkRedBG},
 		addedRow:     rowStyle{bg: []string{cDarkBG}, num: []string{cLineNum}, text: []string{cGreen}},
 		removedRow:   rowStyle{bg: []string{cDarkRedBG}, num: []string{cLineNum}, text: []string{cRed}},
@@ -138,18 +126,23 @@ func selectPalette() Palette {
 }
 
 func computeEnabled() bool {
-	switch strings.ToLower(os.Getenv("NO_COLOR")) {
-	case "", "0", "false", "no", "off":
-	default:
-		return false // https://no-color.org
-	}
-	if v := os.Getenv("CLICOLOR"); v == "0" {
+	return colorWanted(os.Getenv, IsTerminal(os.Stdout.Fd()))
+}
+
+// colorWanted decides colour from the environment and whether stdout is a terminal. Any
+// non-empty NO_COLOR turns it off (https://no-color.org), even "0". Otherwise a non-empty
+// FORCE_COLOR (https://force-color.org) or a CLICOLOR_FORCE other than "0" turns it on, also
+// for a pipe or a dumb terminal; CLICOLOR=0 or TERM=dumb turn it off; and a terminal has it.
+func colorWanted(getenv func(string) string, terminal bool) bool {
+	switch {
+	case getenv("NO_COLOR") != "":
+		return false
+	case getenv("FORCE_COLOR") != "", getenv("CLICOLOR_FORCE") != "" && getenv("CLICOLOR_FORCE") != "0":
+		return true
+	case getenv("CLICOLOR") == "0", strings.EqualFold(getenv("TERM"), "dumb"):
 		return false
 	}
-	if strings.EqualFold(os.Getenv("TERM"), "dumb") {
-		return false
-	}
-	return IsTerminal(os.Stdout.Fd())
+	return terminal
 }
 
 // IsTerminal reports whether fd refers to a terminal (character device).
@@ -159,10 +152,6 @@ func IsTerminal(fd uintptr) bool {
 
 // Enabled reports whether styling helpers currently emit escape codes.
 func Enabled() bool { return enabled }
-
-// ComputeEnabledForTest recomputes the default enablement decision from the
-// environment. Exposed for tests only.
-func ComputeEnabledForTest() bool { return computeEnabled() }
 
 // SetEnabled forces colour on or off. Exposed for tests.
 func SetEnabled(on bool) { enabled = on }

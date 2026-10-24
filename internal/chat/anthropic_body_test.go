@@ -32,12 +32,12 @@ func TestAnthropicRequestBodyIsDeterministic(t *testing.T) {
 	model := config.Model{ID: "claude-opus-5-5"}
 	messages := []Message{{Role: "user", Content: "hi"}}
 
-	first, err := marshalAnthropicRequest(model, messages, tools)
+	first, err := encodeRequestBody(anthropicRequestFor(model, messages, tools))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := range 50 {
-		got, err := marshalAnthropicRequest(model, messages, tools)
+		got, err := encodeRequestBody(anthropicRequestFor(model, messages, tools))
 		if err != nil {
 			t.Fatal(err)
 		}

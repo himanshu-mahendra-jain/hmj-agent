@@ -227,7 +227,7 @@ func (v *vtScreen) eraseDisplay(mode int) {
 		}
 	case 1:
 		v.eraseLine(1)
-		for r := 0; r < v.row; r++ {
+		for r := range v.row {
 			v.grid[r] = make([]rune, v.cols)
 		}
 	case 2:
@@ -313,9 +313,9 @@ func (v *vtScreen) Dump() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "screen %dx%d, cursor row %d col %d:\n", v.rows, v.cols, v.row, v.col)
 	b.WriteString("+" + strings.Repeat("-", v.cols) + "+\n")
-	for r := 0; r < v.rows; r++ {
+	for r := range v.rows {
 		b.WriteByte('|')
-		for c := 0; c < v.cols; c++ {
+		for c := range v.cols {
 			switch ch := v.grid[r][c]; {
 			case r == v.row && c == v.col:
 				b.WriteRune('█')

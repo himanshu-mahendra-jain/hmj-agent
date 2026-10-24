@@ -1,0 +1,27 @@
+package chat
+
+import "hmj-agent/internal/config"
+
+// EffortLabel says what reasoning effort requests to model over provider carry: the configured
+// level; "default" when none is set, leaving it to the provider; how Gemini narrows xhigh and
+// max to high; or that the level is not sent, by Chat Completions, which has no effort field,
+// or with thinking off on a protocol that sends effort only alongside reasoning. A provider whose
+// protocol hmj finds by probing is shown as configured.
+func EffortLabel(provider config.Provider, model config.Model) string {
+	if model.Effort == "" {
+		return "default"
+	}
+	api, source := provider.WireAPISource()
+	if source == config.SourceDefault {
+		return model.Effort
+	}
+	switch {
+	case api == config.APICompletions:
+		return "default (" + model.Effort + " not sent: Chat Completions)"
+	case api != config.APIAnthropic && !model.ThinkingEnabled():
+		return "default (" + model.Effort + " not sent: thinking off)"
+	case api == config.APIGemini && geminiThinkingLevel(model.Effort) != model.Effort:
+		return geminiThinkingLevel(model.Effort) + " (from " + model.Effort + ")"
+	}
+	return model.Effort
+}

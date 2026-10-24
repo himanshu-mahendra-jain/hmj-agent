@@ -21,7 +21,7 @@ type InputItem struct {
 	CallID    string `json:"call_id,omitempty"`   // function call id
 	Name      string `json:"name,omitempty"`      // function name
 	Arguments string `json:"arguments,omitempty"` // function arguments
-	Output    string `json:"output,omitempty"`    // tool output
+	Output    any    `json:"output,omitzero"`     // tool output: a string, or with images []responsesOutputPart
 	// ID, EncryptedContent and Summary replay a reasoning item. Summary is a pointer so an
 	// empty summary is still sent as [].
 	ID               string    `json:"id,omitempty"`
@@ -30,6 +30,34 @@ type InputItem struct {
 	// Raw, when set, is an item of a compacted window, sent exactly as the compact endpoint
 	// returned it in place of the fields above.
 	Raw jsontext.Value `json:"-"`
+}
+
+// responsesOutputPart is one part of a function_call_output that carries images.
+type responsesOutputPart struct {
+	Type     string `json:"type"` // "input_text" or "input_image"
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"` // a data: URL
+}
+
+// responsesToolOutput is a tool result's output: its text, or with images, a list of a text
+// part and image parts. A picture that cannot be loaded becomes a text note.
+func responsesToolOutput(msg Message) any {
+	if len(msg.Images) == 0 {
+		return msg.Content
+	}
+	var parts []responsesOutputPart
+	if msg.Content != "" {
+		parts = append(parts, responsesOutputPart{Type: "input_text", Text: msg.Content})
+	}
+	for _, img := range msg.Images {
+		data, note := img.base64Data()
+		if note != "" {
+			parts = append(parts, responsesOutputPart{Type: "input_text", Text: note})
+			continue
+		}
+		parts = append(parts, responsesOutputPart{Type: "input_image", ImageURL: "data:" + img.MediaType + ";base64," + data})
+	}
+	return parts
 }
 
 // inputItemFields is InputItem without its MarshalJSONTo method.
@@ -123,7 +151,7 @@ func convertMessagesToInputItems(messages []Message) []InputItem {
 			items = append(items, InputItem{
 				Type:   "function_call_output",
 				CallID: msg.ToolCallID,
-				Output: msg.Content,
+				Output: responsesToolOutput(msg),
 			})
 		case "assistant":
 			// Reasoning items come first, as the model produced them, and are replayed unchanged.
@@ -224,6 +252,7 @@ func (c *Client) streamResponsesOnce(
 
 	startTime := time.Now()
 	acc := newResponsesAccumulator(startTime)
+	acc.toolProgress = toolProgressFrom(ctx)
 	retryAfter, retryable, err := c.doStream(ctx, req, func(evType, data string) error {
 		return acc.handle(evType, data, onReasoning, onDelta)
 	}, func() bool { return !acc.firstToken.IsZero() })
@@ -238,7 +267,9 @@ func (c *Client) streamResponsesOnce(
 // responsesAccumulator folds the server-sent events of one Responses API stream into the
 // assistant message and its token usage.
 type responsesAccumulator struct {
-	startTime      time.Time
+	startTime time.Time
+	// toolProgress is told about each tool call as the model writes it.
+	toolProgress   toolProgress
 	firstToken     time.Time
 	contentBuilder strings.Builder
 	toolCallsByID  map[string]*ToolCall
@@ -314,11 +345,13 @@ func (a *responsesAccumulator) handle(evType, data string, onReasoning, onDelta 
 			if ev.Item.ID != "" {
 				a.callIDByItem[ev.Item.ID] = tc.ID
 			}
+			a.toolProgress.report(tc.Function.Name, 0)
 		}
 	case "response.function_call_arguments.delta":
 		a.markFirstToken()
 		tc := a.toolCall(a.resolveCallID(ev.CallID, ev.ItemID), "")
 		a.toolArgsByID[tc.ID].WriteString(ev.Delta)
+		a.toolProgress.report(tc.Function.Name, a.toolArgsByID[tc.ID].Len())
 	case "response.function_call_arguments.done":
 		tc := a.toolCall(a.resolveCallID(ev.CallID, ev.ItemID), "")
 		if ev.Arguments != "" {

@@ -2,7 +2,6 @@ package terminal
 
 import (
 	"strings"
-	"unicode"
 
 	"hmj-agent/internal/terminal/theme"
 )
@@ -21,112 +20,6 @@ type Table struct {
 	Headers []string
 	Align   []Alignment
 	Rows    [][]string
-}
-
-func isWideMiscSymbol(r rune) bool {
-	switch {
-	case r == 0x2614 || r == 0x2615:
-		return true
-	case r >= 0x2648 && r <= 0x2653:
-		return true
-	case r == 0x267f || r == 0x2693 || r == 0x26a1:
-		return true
-	case r == 0x26aa || r == 0x26ab || r == 0x26bd || r == 0x26be:
-		return true
-	case r == 0x26c4 || r == 0x26c5 || r == 0x26ce || r == 0x26d4:
-		return true
-	case r == 0x26ea || (r >= 0x26f2 && r <= 0x26f3) || r == 0x26f5 || r == 0x26fa || r == 0x26fd:
-		return true
-	case r == 0x2705 || r == 0x270a || r == 0x270b || r == 0x2728:
-		return true
-	case r == 0x274c || r == 0x274e || (r >= 0x2753 && r <= 0x2755) || r == 0x2757:
-		return true
-	case (r >= 0x2795 && r <= 0x2797) || r == 0x27b0 || r == 0x27bf:
-		return true
-	}
-	return false
-}
-
-// isZeroWidth reports whether r takes no column of its own: combining marks (accents,
-// variation selectors), Hangul medial vowels and final consonants, and invisible format
-// characters such as the zero-width joiner. The soft hyphen is a format character that
-// terminals draw, so it keeps its column.
-func isZeroWidth(r rune) bool {
-	if r >= 0x1160 && r <= 0x11ff {
-		return true
-	}
-	return r != 0xad && unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf)
-}
-
-// isWideEmoji reports whether r is a pictograph terminals draw two columns wide (East
-// Asian Width W) outside the blocks runeWidth checks by range.
-func isWideEmoji(r rune) bool {
-	switch {
-	case r == 0x231a || r == 0x231b || (r >= 0x23e9 && r <= 0x23ec) || r == 0x23f0 || r == 0x23f3:
-		return true
-	case r == 0x25fd || r == 0x25fe || r == 0x2b1b || r == 0x2b1c || r == 0x2b50 || r == 0x2b55:
-		return true
-	case r == 0x1f004 || r == 0x1f0cf || r == 0x1f18e || (r >= 0x1f191 && r <= 0x1f19a):
-		return true
-	case r >= 0x1f200 && r <= 0x1f265: // enclosed ideographic supplement
-		return true
-	case r >= 0x1f680 && r <= 0x1f6ff: // transport and map symbols
-		return true
-	case (r >= 0x1f7e0 && r <= 0x1f7eb) || r == 0x1f7f0: // coloured circles and squares
-		return true
-	case r >= 0x1fa70 && r <= 0x1faff: // symbols and pictographs extended-A
-		return true
-	}
-	return false
-}
-
-// runeWidth calculates display columns for a single rune.
-func runeWidth(r rune) int {
-	if r < 0x20 {
-		return 0
-	}
-	if r < 0x7f {
-		return 1
-	}
-	if isZeroWidth(r) {
-		return 0
-	}
-	if isWideEmoji(r) {
-		return 2
-	}
-	if r >= 0x2600 && r <= 0x27bf {
-		if isWideMiscSymbol(r) {
-			return 2
-		}
-		return 1
-	}
-	if r >= 0x1100 && (r <= 0x115f ||
-		r == 0x2329 || r == 0x232a ||
-		(r >= 0x2e80 && r <= 0xa4cf && r != 0x303f) ||
-		(r >= 0xac00 && r <= 0xd7a3) ||
-		(r >= 0xf900 && r <= 0xfaff) ||
-		(r >= 0xfe10 && r <= 0xfe19) ||
-		(r >= 0xfe30 && r <= 0xfe6f) ||
-		(r >= 0xff00 && r <= 0xff60) ||
-		(r >= 0xffe0 && r <= 0xffe6) ||
-		(r >= 0x1f300 && r <= 0x1f64f) ||
-		(r >= 0x1f900 && r <= 0x1f9ff) ||
-		(r >= 0x20000 && r <= 0x2fffd) || // CJK extensions B and later
-		(r >= 0x30000 && r <= 0x3fffd)) {
-		return 2
-	}
-	return 1
-}
-
-// VisibleWidth calculates the displayed column width of a string in a terminal,
-// stripping ANSI escape sequences and accounting for double-width runes (emojis, CJK).
-func VisibleWidth(s string) int {
-	clean := theme.StripANSI(s)
-	width := 0
-	for _, r := range clean {
-		width += runeWidth(r)
-	}
-	return width
 }
 
 func padCell(s string, width int, align Alignment) string {
@@ -176,12 +69,7 @@ func isSeparatorRow(line string) bool {
 
 func parseCells(line string) []string {
 	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "|") {
-		trimmed = trimmed[1:]
-	}
-	if strings.HasSuffix(trimmed, "|") {
-		trimmed = trimmed[:len(trimmed)-1]
-	}
+	trimmed = strings.TrimSuffix(strings.TrimPrefix(trimmed, "|"), "|")
 	rawCells := strings.Split(trimmed, "|")
 	cells := make([]string, len(rawCells))
 	for i, c := range rawCells {
@@ -374,12 +262,6 @@ func stripCellMarkdown(s string) string {
 		return s
 	}
 	return parseCellMarkdown(s).plain()
-}
-
-// renderCellMarkdown turns **bold**, *italic* and `code` into styled terminal text. Its visible
-// text is always exactly stripCellMarkdown(s), so a cell never outgrows its column.
-func renderCellMarkdown(s string, useUnicode bool) string {
-	return parseCellMarkdown(s).render(useUnicode)
 }
 
 // cellWords splits a line into words at whitespace, keeping each piece's style, so a styled
@@ -747,12 +629,17 @@ func writeTableData(b *strings.Builder, rows [][]string, colWidths []int, align 
 
 // Render renders the table into an aligned, beautifully formatted box-drawing grid.
 func (t *Table) Render() string {
+	return t.render(renderTableWidth())
+}
+
+// render draws the table in at most maxWidth columns.
+func (t *Table) render(maxWidth int) string {
 	numCols := len(t.Headers)
 	if numCols == 0 {
 		return ""
 	}
 
-	colWidths := computeColumnWidths(t.Headers, t.Rows, renderTableWidth())
+	colWidths := computeColumnWidths(t.Headers, t.Rows, maxWidth)
 	useUnicode := theme.Enabled() && !theme.Accessibility()
 	g := newTableGlyphs(useUnicode)
 
@@ -764,90 +651,4 @@ func (t *Table) Render() string {
 	writeTableBorder(&b, colWidths, g.bl, g.hl, g.bm, g.br)
 
 	return b.String()
-}
-
-// TableStreamer intercepts streaming markdown text chunks to detect, buffer,
-// and beautifully render tables upon completion while letting normal prose pass instantly.
-type TableStreamer struct {
-	out        func(string)
-	lineBuf    strings.Builder
-	tableLines []string
-	inTable    bool
-}
-
-// NewTableStreamer creates a TableStreamer sending rendered text to out.
-func NewTableStreamer(out func(string)) *TableStreamer {
-	return &TableStreamer{out: out}
-}
-
-func isPotentialTableRow(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	return len(trimmed) >= 2 && strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|")
-}
-
-func (s *TableStreamer) processLine(line string) {
-	if isPotentialTableRow(line) {
-		s.tableLines = append(s.tableLines, line)
-		s.inTable = true
-		return
-	}
-
-	if s.inTable {
-		s.flushTable()
-	}
-	s.out(line + "\n")
-}
-
-func (s *TableStreamer) flushTable() {
-	if len(s.tableLines) == 0 {
-		s.inTable = false
-		return
-	}
-	if tbl, ok := ParseMarkdownTable(s.tableLines); ok {
-		s.out(tbl.Render())
-	} else {
-		for _, l := range s.tableLines {
-			s.out(l + "\n")
-		}
-	}
-	s.tableLines = nil
-	s.inTable = false
-}
-
-// Write processes a streamed chunk of text from the assistant.
-func (s *TableStreamer) Write(chunk string) {
-	s.lineBuf.WriteString(chunk)
-	content := s.lineBuf.String()
-	for {
-		idx := strings.IndexByte(content, '\n')
-		if idx == -1 {
-			break
-		}
-		line := content[:idx]
-		content = content[idx+1:]
-		s.processLine(line)
-	}
-	s.lineBuf.Reset()
-	s.lineBuf.WriteString(content)
-}
-
-// Flush flushes any pending buffered lines at the end of generation.
-func (s *TableStreamer) Flush() {
-	if s.lineBuf.Len() > 0 {
-		line := s.lineBuf.String()
-		s.lineBuf.Reset()
-		if isPotentialTableRow(line) {
-			// Open the table as processLine would, or the row would never be written.
-			s.tableLines = append(s.tableLines, line)
-			s.inTable = true
-		} else {
-			if s.inTable {
-				s.flushTable()
-			}
-			s.out(line)
-		}
-	}
-	if s.inTable {
-		s.flushTable()
-	}
 }

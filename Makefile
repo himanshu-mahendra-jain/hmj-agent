@@ -7,10 +7,17 @@ fix:
 	go fix -newexpr ./...
 	gofmt -s -w .
 
+# Linters from golang.org/x, run by version so they stay out of go.mod and go.sum (whose
+# tests would pull third-party modules into go.sum); bump by hand.
+XTOOLS := v0.52.0
+
 check:
 	@test -z "$$(gofmt -s -l .)" || (echo "Unformatted files found. Run 'make fix'." && exit 1)
 	@go fix -diff ./... >/dev/null && go fix -newexpr -diff ./... >/dev/null || (echo "go fix has pending rewrites. Run 'make fix'." && exit 1)
 	go vet ./...
+	go run golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness@$(XTOOLS) ./...
+	go run ./cmd/droppederr ./...
+	@out=$$(go run golang.org/x/tools/cmd/deadcode@$(XTOOLS) ./...) && test -z "$$out" || (echo "$$out"; echo "Functions above are unreachable from hmj (test-only code belongs in _test.go files)."; exit 1)
 
 # Known vulnerabilities in dependencies and the Go standard library (needs network access).
 # Pinned, since it runs in the release job that builds the binaries; bump it by hand.
@@ -23,7 +30,7 @@ test:
 	@rm -f cover.out
 
 # Coverage including the built binary: the unit tests write their counters to
-# $(COVER_DIR)/unit, and the binary that e2e/ and tests/ drive as a subprocess is built
+# $(COVER_DIR)/unit, and the binary that e2e/ drives as a subprocess is built
 # with -cover (HMJ_COVER_DIR) and writes to $(COVER_DIR)/bin. Both are merged into
 # cover.out; `go tool cover -html=cover.out` shows it.
 COVER_DIR := $(CURDIR)/.cover
@@ -49,18 +56,17 @@ e2e-live:
 	go test ./e2e -run '^TestLiveProvider$$' -count=1 -v
 
 bench:
-	go test ./tests -bench=. -benchmem -run=^$$
+	go test ./... -bench=. -benchmem -run=^$$
 
 race:
 	go test ./... -race -count=5 -shuffle=on -timeout=5m
 
 fuzz:
-	go test ./tests -run=^$$ -fuzz=^FuzzResolvePath$$ -fuzztime=3s
-	go test ./tests -run=^$$ -fuzz=^FuzzDiffText$$ -fuzztime=3s
-	go test ./tests -run=^$$ -fuzz=^FuzzToolArguments$$ -fuzztime=3s
-	go test ./tests -run=^$$ -fuzz=^FuzzParseRateLimitHint$$ -fuzztime=3s
-	go test ./tests -run=^$$ -fuzz=^FuzzCompactToolOutput$$ -fuzztime=3s
-	go test ./tests -run=^$$ -fuzz=^FuzzUnquoteDragPath$$ -fuzztime=3s
+	go test ./internal/tools -run=^$$ -fuzz=^FuzzResolvePath$$ -fuzztime=3s
+	go test ./internal/diff -run=^$$ -fuzz=^FuzzDiffText$$ -fuzztime=3s
+	go test ./internal/tools -run=^$$ -fuzz=^FuzzToolArguments$$ -fuzztime=3s
+	go test ./internal/chat -run=^$$ -fuzz=^FuzzParseRateLimitHint$$ -fuzztime=3s
+	go test ./internal/terminal -run=^$$ -fuzz=^FuzzUnquoteDragPath$$ -fuzztime=3s
 	go test ./internal/tools -run=^$$ -fuzz=^FuzzHTMLToText$$ -fuzztime=3s
 	go test ./internal/tools -run=^$$ -fuzz=^FuzzFindTrimmedLineMatches$$ -fuzztime=3s
 	go test ./internal/terminal -run=^$$ -fuzz=^FuzzSeamlessInputKeys$$ -fuzztime=3s

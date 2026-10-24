@@ -131,3 +131,20 @@ func TestRunnerInstallsClientNotices(t *testing.T) {
 		t.Error("the runner replaced a protocol callback the caller had set")
 	}
 }
+
+// TestProviderErrorsCannotDriveTheTerminal checks that the notices quoting a provider's error, whose
+// body and headers the server controls, print it without its escape sequences.
+func TestProviderErrorsCannotDriveTheTerminal(t *testing.T) {
+	providerErr := &chat.StatusError{Code: 503, Body: "busy\x1b]52;c;eA==\x07 now\x1b[2J (request_id req\x1b]0;x\x07)"}
+	client := chat.NewClient(config.Config{})
+	NewRunnerWithTools(client, config.Config{}, nil)
+
+	for name, out := range map[string]string{
+		"retry":      captureStderr(t, func() { client.OnRetry(1, 3, time.Second, providerErr) }),
+		"compaction": captureOutput(t, func() { reportCompactionError(providerErr) }),
+	} {
+		if strings.Contains(out, "\x1b]") || strings.ContainsRune(out, 0x07) || strings.Contains(out, "\x1b[2J") || !strings.Contains(out, "busy now") {
+			t.Errorf("%s notice = %q", name, out)
+		}
+	}
+}

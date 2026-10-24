@@ -34,8 +34,8 @@ func enterLineMode() (restore func()) {
 	}
 	cooked := *old
 	cooked.Lflag |= unix.ICANON | unix.ECHO
-	_ = unix.IoctlSetTermios(fd, unix.TCSETS, &cooked)
-	return func() { _ = unix.IoctlSetTermios(fd, unix.TCSETS, old) }
+	setTermios(fd, &cooked)
+	return func() { setTermios(fd, old) }
 }
 
 // readAccessibleInput reads one prompt line by line from reader. A line ending in a backslash
@@ -120,8 +120,11 @@ func accessibleSelect(title string, items []SelectItem, reader *bufio.Reader, cb
 	}
 	defer enterLineMode()()
 
-	// The key hints in the raw menu's title do not apply here; the hint line below names the commands.
-	title, _, _ = strings.Cut(title, " (type ")
+	// The key hints that close the raw menu's title, in parentheses, do not apply here; the
+	// hint line below names the commands.
+	if i := strings.LastIndex(title, " ("); i >= 0 && strings.HasSuffix(title, ")") {
+		title = title[:i]
+	}
 	m := &accessibleMenu{items: slices.Clone(items), reader: reader, cb: cb}
 	fmt.Println(theme.ASCII(title))
 	fmt.Println(m.hint())
@@ -270,8 +273,9 @@ func (m *accessibleMenu) rename(target SelectItem, newName string) {
 // when no items remain, so the menu closes.
 func (m *accessibleMenu) deleteItem(target SelectItem) (SelectItem, bool, bool) {
 	fmt.Printf("delete \"%s\"? type y to confirm: ", menuLine(target.Text))
-	answer, _ := m.reader.ReadString('\n')
-	if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+	// Input that ends before the line does (EOF) is no confirmation, even if it reads "y".
+	answer, err := m.reader.ReadString('\n')
+	if a := strings.ToLower(strings.TrimSpace(answer)); err != nil || a != "y" && a != "yes" {
 		fmt.Println("delete cancelled")
 		return SelectItem{}, false, false
 	}

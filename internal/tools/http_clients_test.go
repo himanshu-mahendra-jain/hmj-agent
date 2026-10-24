@@ -7,10 +7,10 @@ import (
 )
 
 func TestPooledClientsAreSingletons(t *testing.T) {
-	if publicSearchClient() != publicSearchClient() {
+	if first, second := publicSearchClient(), publicSearchClient(); first != second {
 		t.Error("publicSearchClient should return the same instance")
 	}
-	if fetchClient() != fetchClient() {
+	if first, second := fetchClient(), fetchClient(); first != second {
 		t.Error("fetchClient should return the same instance")
 	}
 	if publicSearchClient() == fetchClient() {

@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"os"
@@ -10,15 +11,15 @@ import (
 	"hmj-agent/internal/terminal/theme"
 )
 
-// StartAccessibleProgress prints an append-only "[running] label (Ns)" line every
-// accessibility report interval while a long operation runs. It does nothing outside
-// accessibility mode. The returned stop function is idempotent: it ends the ticker and waits
-// for its goroutine to exit, so no line is written after stop returns.
-func StartAccessibleProgress(label string) (stop func()) {
+// StartAccessibleProgress prints an append-only "[running] label (Ns)" line every interval
+// (zero means the accessibility report interval) while a long operation runs. It does
+// nothing outside accessibility mode. The returned stop function is idempotent: it ends the
+// ticker and waits for its goroutine to exit, so no line is written after stop returns.
+func StartAccessibleProgress(label string, every time.Duration) (stop func()) {
 	if !theme.Accessibility() {
 		return func() {}
 	}
-	return startProgress(os.Stdout, label, accessibleReportInterval)
+	return startProgress(os.Stdout, label, cmp.Or(every, accessibleReportInterval))
 }
 
 // startProgress runs the ticker goroutine that writes the progress lines to w.

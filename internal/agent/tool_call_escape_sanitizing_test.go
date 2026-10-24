@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json/v2"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,10 +44,12 @@ func TestToolCallArgumentsCannotDriveTheTerminal(t *testing.T) {
 		{"run_command", `{"command":"rm -rf x\u001b[2K\rls -la"}`, "rm -rf x"},
 		{"run_command", `{"command":"echo hi\u001b]52;c;cm0gLXJmIH4=\u0007"}`, "echo hi"},
 		{"web_search", `{"query":"go\u001b[1A\u001b[2Kdocs"}`, "godocs"},
+		{"web_search", `{"query":"q","allowed_domains":["go.dev\u0007","pkg.go.dev"],"blocked_domains":["x\u001b[2K.io"],"recency":"week"}`, "q (only: go.dev, pkg.go.dev; not: x.io; past week)"},
 		{"fetch_url", `{"url":"http://a.test/\u001b]8;;http://b.test\u001b\\link\u001b]8;;\u001b\\"}`, "http://a.test/link"},
 		{"read_file", `{"path":"a.txt\u001b[2K\rb.txt","offset":3}`, "a.txtb.txt"},
 		{"read_file", `{"path":"a.txt","offset":"1\u001b[2K\rrm -rf ~"}`, "(offset: 1rm -rf ~)"},
 		{"list_files", `{"path":"dir\u0007"}`, "dir"},
+		{"grep", `{"pattern":"TODO\u001b[2K","glob":"*.go\u0007"}`, "TODO (glob: *.go)"},
 		{"write_file", `{"path":"f\u001b[31m.go","content":"x"}`, "f.go"},
 		{"bad\u001b[2Kname", `{"x":"y"}`, "badname"},
 		{"run_command", "not json \x1b]52;c;eA==\x07", "not json"},
@@ -69,7 +72,9 @@ func TestEditDiffCannotDriveTheTerminal(t *testing.T) {
 	osc52 := "\x1b]52;c;cm0gLXJmIH4=\x07"
 
 	created := filepath.Join(dir, "new\x1b[2K.txt")
-	out := captureOutput(t, func() { printEditFileCall(created, "", "safe line"+osc52+"\nnext\r\n") })
+	out := captureOutput(t, func() {
+		printEditCall(editArgs(t, created, "", "safe line"+osc52+"\nnext\r\n"), created, "", "safe line"+osc52+"\nnext\r\n", nil)
+	})
 	if !strings.Contains(out, "safe line") {
 		t.Errorf("new-file diff lacks its text:\n%q", out)
 	}
@@ -79,9 +84,21 @@ func TestEditDiffCannotDriveTheTerminal(t *testing.T) {
 	if err := os.WriteFile(existing, []byte("context\x07one\nold value\ncontext\x1b[1Atwo\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out = captureOutput(t, func() { printEditFileCall(existing, "old value", "new"+osc52+" value") })
+	out = captureOutput(t, func() {
+		printEditCall(editArgs(t, existing, "old value", "new"+osc52+" value"), existing, "old value", "new"+osc52+" value", nil)
+	})
 	if !strings.Contains(out, "contextone") || !strings.Contains(out, "value") {
 		t.Errorf("edit diff lacks its context or changed text:\n%q", out)
 	}
 	assertNoInjectedControls(t, out)
+}
+
+// editArgs is the JSON arguments of an edit_file call.
+func editArgs(t *testing.T, path, oldStr, newStr string) string {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"path": path, "old_string": oldStr, "new_string": newStr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

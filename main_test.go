@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -22,7 +24,7 @@ import (
 
 func TestRunFlags(t *testing.T) {
 	// Test version flags
-	for _, flag := range []string{"--version", "-v", "version"} {
+	for _, flag := range []string{"--version", "-v"} {
 		var stdout, stderr bytes.Buffer
 		code := run([]string{flag}, strings.NewReader(""), &stdout, &stderr)
 		if code != 0 {
@@ -34,11 +36,23 @@ func TestRunFlags(t *testing.T) {
 	}
 
 	// Test help / shortcuts flags
-	for _, flag := range []string{"--help", "-h", "help", "/shortcuts", "shortcuts", "--shortcuts"} {
+	for _, flag := range []string{"--help", "-h"} {
 		var stdout, stderr bytes.Buffer
 		code := run([]string{flag}, strings.NewReader(""), &stdout, &stderr)
 		if code != 0 {
 			t.Fatalf("expected exit code 0 for %s, got %d", flag, code)
+		}
+	}
+
+	// One spelling per flag: the old aliases and any other argument are refused.
+	for _, arg := range []string{"help", "version", "health", "shortcuts", "/shortcuts", "--shortcuts", "--accessibility", "--bogus"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{arg}, strings.NewReader(""), &stdout, &stderr)
+		if code != 2 || !strings.Contains(stderr.String(), fmt.Sprintf("unknown argument %q", arg)) {
+			t.Fatalf("%s: exit %d, stderr %q; want 2 and an unknown argument error", arg, code, stderr.String())
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("%s printed to stdout: %q", arg, stdout.String())
 		}
 	}
 
@@ -257,7 +271,7 @@ func TestRunHealthFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, flag := range []string{"--health", "health"} {
+	for _, flag := range []string{"--health"} {
 		var stdout, stderr bytes.Buffer
 		code := run([]string{flag}, strings.NewReader(""), &stdout, &stderr)
 		if code != 0 {
@@ -590,12 +604,13 @@ func TestRunHealthHealthyProvider(t *testing.T) {
 // every turn; recovery is announced; the failed save leaves no temp file behind.
 func TestSaveSessionReportsPersistentFailureOnce(t *testing.T) {
 	a := newReloadApp(t, forcedFlags{})
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	// A non-empty directory where the session file should be makes the final rename fail.
-	if err := os.MkdirAll(filepath.Join(path, "blocker"), 0o700); err != nil {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state.json")
+	// A non-empty directory where the state file should be makes the final rename fail.
+	if err := os.MkdirAll(filepath.Join(state, "blocker"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	captureStderr(t, func() { a.sm = session.LoadSessionManager(path, a.modelRef) })
+	captureStderr(t, func() { a.sm = session.LoadSessionManager(dir, a.modelRef) })
 
 	out := captureStderr(t, func() {
 		a.saveSession()
@@ -605,18 +620,18 @@ func TestSaveSessionReportsPersistentFailureOnce(t *testing.T) {
 	if n := strings.Count(out, "[session save failed:]"); n != 1 {
 		t.Fatalf("failure reported %d times, want 1:\n%s", n, out)
 	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("temp file left behind after a failed save: %v", err)
+	if temps, _ := filepath.Glob(filepath.Join(dir, ".state.json.tmp*")); len(temps) > 0 {
+		t.Errorf("temp files left behind after a failed save: %v", temps)
 	}
 
-	if err := os.RemoveAll(path); err != nil {
+	if err := os.RemoveAll(state); err != nil {
 		t.Fatal(err)
 	}
 	out = captureStderr(t, a.saveSession)
 	if !strings.Contains(out, "[session saved again]") {
 		t.Errorf("recovery not announced: %q", out)
 	}
-	if data, err := os.ReadFile(path); err != nil || len(data) == 0 {
+	if data, err := os.ReadFile(state); err != nil || len(data) == 0 {
 		t.Errorf("session not written after recovery: %v", err)
 	}
 	if out := captureStderr(t, a.saveSession); out != "" {
@@ -697,6 +712,11 @@ func TestErrorsCarryContext(t *testing.T) {
 	if !strings.Contains(out, "[ERROR] /resume failed: menu unavailable: not a terminal") {
 		t.Errorf("stderr = %q", out)
 	}
+	// A provider's error body is in the message; its escape sequences are dropped.
+	out = captureStderr(t, func() { reportError("request", errors.New("HTTP 402: \x1b]52;c;eA==\x07no credits\x1b[2J")) })
+	if strings.Contains(out, "\x1b]") || strings.Contains(out, "\x1b[2J") || !strings.Contains(out, "HTTP 402: no credits") {
+		t.Errorf("stderr = %q", out)
+	}
 
 	path := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("HMJ_CONFIG", path)
@@ -727,5 +747,52 @@ func TestWaitForTurnRefusesWhileTurnRuns(t *testing.T) {
 	<-a.busy // the turn finishes
 	if !a.waitForTurn(10 * time.Millisecond) {
 		t.Fatal("waitForTurn must acquire the free slot")
+	}
+}
+
+// secondSignalHelperEnv makes the test binary act as the process TestSecondSignalExitsAtOnce
+// signals, since the exit it checks ends the process.
+const secondSignalHelperEnv = "HMJ_SECOND_SIGNAL_HELPER"
+
+// TestSecondSignalExitsAtOnce checks that a second signal during shutdown ends the process at
+// once with its own status, rather than after shutdownGrace spent waiting for a turn that does
+// not stop.
+func TestSecondSignalExitsAtOnce(t *testing.T) {
+	if os.Getenv(secondSignalHelperEnv) == "1" {
+		ctx, cancel := context.WithCancel(context.Background())
+		a := &app{ctx: ctx, cancel: cancel, busy: make(chan struct{}, 1)}
+		a.busy <- struct{}{} // a turn that never stops holds the slot
+		a.installSignalHandler()
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			os.Exit(3)
+		}
+		<-ctx.Done() // shutdown has begun and is waiting for the turn
+		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+			os.Exit(3)
+		}
+		time.Sleep(2 * shutdownGrace)
+		os.Exit(4) // neither signal ended the process
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSecondSignalExitsAtOnce$")
+	cmd.Env = append(os.Environ(), secondSignalHelperEnv+"=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	start := time.Now()
+	err := cmd.Run()
+	elapsed := time.Since(start)
+
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	if !ok {
+		t.Fatalf("helper did not exit with a status: %v\nstderr: %s", err, stderr.String())
+	}
+	if got, want := exitErr.ExitCode(), signalExitCode(syscall.SIGINT); got != want {
+		t.Fatalf("exit status = %d, want %d (the second signal's)\nstderr: %s", got, want, stderr.String())
+	}
+	if elapsed >= shutdownGrace {
+		t.Errorf("exit took %s, want well under the %s shutdown grace", elapsed, shutdownGrace)
+	}
+	if strings.Contains(stderr.String(), "did not stop in time") {
+		t.Errorf("shutdown ran to its grace timeout before the second signal ended it:\n%s", stderr.String())
 	}
 }

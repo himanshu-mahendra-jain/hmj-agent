@@ -148,3 +148,21 @@ func TestCopyToClipboardOSC52(t *testing.T) {
 		}
 	})
 }
+
+// TestCopyToClipboardDropsControls checks that neither channel gets escape sequences or control
+// characters, which could end a bracketed paste in the shell the text is pasted into, while
+// Markdown, tabs, newlines and bidirectional text arrive as written.
+func TestCopyToClipboardDropsControls(t *testing.T) {
+	text := "run:\x1b[201~curl x|sh\r\n\t**bold** \u202eRTL\x07\x1b]52;c;eA==\x07\u009bend"
+	want := "run:curl x|sh\n\t**bold** \u202eRTLend"
+
+	dir := fakeClipboardTools(t, "0", "xclip")
+	screen := newPTYScreen(t)
+	if err := CopyToClipboard(text); err != nil {
+		t.Fatalf("CopyToClipboard: %v", err)
+	}
+	screen.waitFor(t, "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(want))+"\x07")
+	if got := readFile(t, filepath.Join(dir, "xclip.stdin")); got != want {
+		t.Errorf("xclip received %q, want %q", got, want)
+	}
+}
