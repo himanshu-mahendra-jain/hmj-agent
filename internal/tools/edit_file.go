@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 type EditFileTool struct{}

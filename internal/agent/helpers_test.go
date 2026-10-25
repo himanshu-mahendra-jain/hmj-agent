@@ -1,7 +1,7 @@
 package agent_test
 
 import (
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 func mockAgentConfig(url string) config.Config {

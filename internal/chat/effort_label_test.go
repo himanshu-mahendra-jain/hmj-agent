@@ -3,7 +3,7 @@ package chat
 import (
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // TestEffortLabel checks what the effort label says for each protocol and setting.

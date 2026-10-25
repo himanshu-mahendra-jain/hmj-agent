@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 type ReadFileTool struct{}

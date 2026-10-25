@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // capturedBody serves a fixed SSE body and returns a pointer to the request body it received.

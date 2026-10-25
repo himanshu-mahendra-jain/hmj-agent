@@ -3,7 +3,7 @@ package tools
 import (
 	"testing"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // TestToolSchemasAreClosed checks that every built-in tool schema is a closed object

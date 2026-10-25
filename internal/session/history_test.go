@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
 )
 
 // savedConversation loads a session manager saving to a temporary directory and returns it with

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
 )
 
 // SourceProbed is the wire source reported when the protocol was found by probing the endpoint.

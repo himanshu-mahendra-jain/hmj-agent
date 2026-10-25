@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // StartAccessibleProgress prints an append-only "[running] label (Ns)" line every interval

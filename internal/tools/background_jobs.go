@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/logging"
 )
 
 const (

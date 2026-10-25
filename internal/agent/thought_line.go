@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // maxThoughtBuffer bounds the reasoning a thoughtLine keeps; only the latest line is shown.

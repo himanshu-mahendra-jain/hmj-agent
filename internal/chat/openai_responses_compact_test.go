@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // compactedWindow is a reply's output from the compact endpoint: the encrypted compaction item

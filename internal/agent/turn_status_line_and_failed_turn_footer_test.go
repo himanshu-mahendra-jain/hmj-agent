@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/session"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/session"
 )
 
 // TestFailedStepStillPrintsTheTurnFooter checks that a turn whose second request fails still

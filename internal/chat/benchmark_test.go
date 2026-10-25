@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // BenchmarkReadSSE_10kEvents measures parsing a stream of 10,000 events.

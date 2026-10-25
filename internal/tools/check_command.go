@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 const (

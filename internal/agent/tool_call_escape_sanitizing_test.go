@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // sgrSeq matches one colour (SGR) escape, the only kind the agent itself prints.

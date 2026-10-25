@@ -46,7 +46,8 @@ func VersionString() string {
 // releaseVersion turns the main module version from the build info into the reported version.
 // Only an exact release tag counts: "v1.0.3" becomes "1.0.3", while "(devel)", a pseudo-version
 // such as "v1.0.4-0.20261013154203-2fb9d1ac2b71" and a "+dirty" build all become devVersion.
-// go build only stamps valid semantic versions, so no further parsing is needed.
+// go build only stamps valid semantic versions, so no further parsing is needed. It stamps a
+// v2 or later tag only because the module path ends in /v2, as Go requires of major versions.
 func releaseVersion(v string) string {
 	if after, ok := strings.CutPrefix(v, "v"); ok && !strings.ContainsAny(after, "-+") {
 		return after

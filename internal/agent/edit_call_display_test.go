@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // editCallOutput returns what the transcript shows for an edit_file call with args.

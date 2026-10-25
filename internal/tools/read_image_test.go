@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // useImageStore points the image store at a fresh directory and returns it.

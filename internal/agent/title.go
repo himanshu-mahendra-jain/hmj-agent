@@ -7,11 +7,11 @@ import (
 	"time"
 	"unicode"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // titleInstruction is the system message of the request that names a conversation. The request

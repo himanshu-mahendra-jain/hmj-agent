@@ -8,13 +8,13 @@ import (
 	"strconv"
 	"strings"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal"
-	"hmj-agent/internal/terminal/theme"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal"
+	"hmj-agent/v2/internal/terminal/theme"
+	"hmj-agent/v2/internal/tools"
 )
 
 // HandleNew creates and switches to a new conversation and clears the screen. Earlier

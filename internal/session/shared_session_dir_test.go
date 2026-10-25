@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
 )
 
 // say appends a user message to conv.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // TestMarkdownLinkParsing checks which text is taken for a [text](destination) link: nested

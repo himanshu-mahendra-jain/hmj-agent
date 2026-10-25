@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // Limits applied by the built-in tools.

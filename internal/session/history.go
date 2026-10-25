@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/logging"
 )
 
 // ErrHistoryNotSaved is returned, wrapped, by ApplyCompaction when the compaction was applied but

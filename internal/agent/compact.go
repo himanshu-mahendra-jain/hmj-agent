@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"slices"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/logging"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/logging"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // Compaction is a request that compacts one conversation, running in the background from the end

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/session"
+	"hmj-agent/v2/internal/session"
 )
 
 // TestFirstTurnNamesTheScratchDir checks that a saved conversation's first turn creates its

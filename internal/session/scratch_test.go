@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // TestScratchDirsFollowTheirConversations checks that each saved conversation's scratch directory

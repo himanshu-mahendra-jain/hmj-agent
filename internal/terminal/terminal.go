@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 var (

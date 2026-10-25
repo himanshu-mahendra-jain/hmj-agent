@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 type RunCommandTool struct {

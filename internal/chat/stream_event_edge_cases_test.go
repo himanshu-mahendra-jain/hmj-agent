@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // longGarbage is non-JSON stream data longer than the 200-character snippet an error quotes.

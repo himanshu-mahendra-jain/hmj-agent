@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // FuzzParseRateLimitHint checks the retry hint is never negative and never exceeds a day,

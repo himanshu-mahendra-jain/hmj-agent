@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // renderAt draws s's line as if the terminal were width columns wide.

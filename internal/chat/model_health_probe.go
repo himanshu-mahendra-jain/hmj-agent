@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // HealthStatus categorizes the health of a provider model endpoint.

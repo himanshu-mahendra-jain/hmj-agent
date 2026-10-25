@@ -3,7 +3,7 @@ package diff_test
 import (
 	"testing"
 
-	"hmj-agent/internal/diff"
+	"hmj-agent/v2/internal/diff"
 )
 
 // FuzzDiffText ensures that diff calculations and hunk generation never panic

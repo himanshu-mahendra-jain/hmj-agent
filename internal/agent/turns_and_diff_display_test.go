@@ -2,10 +2,10 @@ package agent
 
 import (
 	"fmt"
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/diff"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/diff"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal/theme"
 	"os"
 	"path/filepath"
 	"strings"

@@ -1,4 +1,4 @@
-module hmj-agent
+module hmj-agent/v2
 
 go 1.27.3
 

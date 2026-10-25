@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/tools"
 )
 
 // FuzzResolvePath ensures arbitrary paths (including traversal, NUL bytes,

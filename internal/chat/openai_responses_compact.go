@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
 )
 
 // responsesCompactRequest is the body of a POST /responses/compact request.

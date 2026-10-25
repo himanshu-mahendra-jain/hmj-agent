@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // recordedThinkingStream is an Anthropic stream with a signed thinking block, a redacted thinking

@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // spinnerFrames is the braille dot cycle used for the animation.

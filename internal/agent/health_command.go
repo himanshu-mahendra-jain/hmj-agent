@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/terminal"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/terminal"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // HandleHealth executes a concurrent, token-frugal health check across all configured

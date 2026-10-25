@@ -1,7 +1,7 @@
 package session_test
 
 import (
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 func testModelRef() config.ModelRef {

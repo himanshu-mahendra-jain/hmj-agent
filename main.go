@@ -16,15 +16,15 @@ import (
 	"syscall"
 	"time"
 
-	"hmj-agent/internal/agent"
-	"hmj-agent/internal/audit"
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal"
-	"hmj-agent/internal/terminal/theme"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/agent"
+	"hmj-agent/v2/internal/audit"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal"
+	"hmj-agent/v2/internal/terminal/theme"
+	"hmj-agent/v2/internal/tools"
 )
 
 // starterConfig is written to the config path on a first run, when no config exists yet.

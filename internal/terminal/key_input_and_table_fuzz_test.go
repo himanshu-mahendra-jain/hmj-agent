@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // FuzzSeamlessInputKeys types arbitrary bytes, escape sequences and bracketed pastes

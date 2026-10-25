@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // menuEnv replaces stdin with a pipe the test feeds and stdout with a file the test reads,

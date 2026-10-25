@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // TestStatusLineShowsTheToolCallBeingWritten checks that once the model's text has streamed, the

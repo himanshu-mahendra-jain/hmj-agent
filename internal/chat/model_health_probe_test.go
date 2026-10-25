@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 func TestProbeModelWireAPIs(t *testing.T) {

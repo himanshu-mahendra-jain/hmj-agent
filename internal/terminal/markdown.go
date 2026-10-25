@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // markdownPad is the margin the model's text is shown with on a terminal.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // The slash palette lists exactly the supported commands. /compact was removed: compaction

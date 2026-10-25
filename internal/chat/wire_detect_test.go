@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 const (

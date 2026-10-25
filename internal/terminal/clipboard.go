@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 const maxOSC52Bytes = 100 * 1024

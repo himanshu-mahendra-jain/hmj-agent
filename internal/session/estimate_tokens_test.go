@@ -3,7 +3,7 @@ package session
 import (
 	"testing"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // TestEstimateTokensUsesReportedPromptSize checks that the reported prompt size is the baseline and

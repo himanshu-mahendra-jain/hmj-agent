@@ -2,7 +2,7 @@ package tools
 
 import (
 	"fmt"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/logging"
 	"os"
 	"path/filepath"
 	"slices"

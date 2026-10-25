@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"hmj-agent/internal/terminal"
+	"hmj-agent/v2/internal/terminal"
 )
 
 // vtScreen is a small VT100/xterm emulator for tests. It applies what hmj writes to a grid of

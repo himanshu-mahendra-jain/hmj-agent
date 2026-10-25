@@ -3,7 +3,7 @@ package terminal
 import (
 	"strings"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // Alignment controls text alignment within table cells.
