@@ -9,10 +9,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"hmj-agent/internal/chat"
+	"hmj-agent/internal/logging"
 )
 
 const (
@@ -87,6 +93,8 @@ func (p *shellProcess) ending() string {
 		return "stopped"
 	case p.err == nil:
 		return "exit 0"
+	case errors.Is(p.err, exec.ErrWaitDelay):
+		return "exit 0 (" + heldOutputNote + ")"
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](p.err); ok && exitErr.ExitCode() >= 0 {
 		return fmt.Sprintf("exit %d", exitErr.ExitCode())
@@ -162,8 +170,14 @@ func (o *jobOutput) close() {
 // lastLines returns up to n of the latest output lines, within maxBytes.
 func (o *jobOutput) lastLines(n, maxBytes int) string {
 	o.mu.Lock()
-	text := strings.TrimRight(strings.ToValidUTF8(string(o.tail), ""), "\r\n")
+	text := string(o.tail)
 	o.mu.Unlock()
+	return tailLines(text, n, maxBytes)
+}
+
+// tailLines returns up to n of the last lines of text, within maxBytes.
+func tailLines(text string, n, maxBytes int) string {
+	text = strings.TrimRight(strings.ToValidUTF8(text, ""), "\r\n")
 	lines := strings.Split(text, "\n")
 	lines = lines[max(0, len(lines)-n):]
 	text = strings.Join(lines, "\n")
@@ -230,10 +244,11 @@ func (j *Job) headline() string {
 	return line
 }
 
-// JobRegistry holds the background jobs of this hmj process.
+// JobRegistry holds the background jobs of this hmj process. Each conversation numbers its
+// own jobs, and the model reaches only its conversation's.
 type JobRegistry struct {
 	mu      sync.Mutex
-	next    int
+	next    map[string]int // the last job number given out, by owner
 	jobs    []*Job
 	changed chan struct{} // closed, and replaced, whenever a job ends
 }
@@ -242,7 +257,7 @@ type JobRegistry struct {
 var Jobs = NewJobRegistry()
 
 func NewJobRegistry() *JobRegistry {
-	return &JobRegistry{changed: make(chan struct{})}
+	return &JobRegistry{next: map[string]int{}, changed: make(chan struct{})}
 }
 
 // start runs cmdStr as a background job of owner, the scratch directory of the conversation
@@ -282,11 +297,16 @@ func (r *JobRegistry) adopt(owner, cmdStr string, p *shellProcess, started time.
 }
 
 // newJob numbers a job and opens its log, in the owner's scratch directory under jobs/, or
-// beside the saved command outputs.
+// beside the saved command outputs. An owner's first job in this process follows the highest
+// number its jobs/ holds, so a job started after a restart is not taken for an earlier one.
 func (r *JobRegistry) newJob(owner, cmdStr string) *Job {
 	r.mu.Lock()
-	r.next++
-	id := r.next
+	last, seen := r.next[owner]
+	if !seen && owner != "" {
+		last = lastJobNumber(filepath.Join(owner, "jobs"))
+	}
+	id := last + 1
+	r.next[owner] = id
 	r.mu.Unlock()
 
 	out := &jobOutput{}
@@ -306,6 +326,137 @@ func (r *JobRegistry) newJob(owner, cmdStr string) *Job {
 	return &Job{ID: id, Command: cmdStr, Owner: owner, out: out}
 }
 
+// jobLogNumber matches a job log's name, job<number>_<time>_<command>.log.
+var jobLogNumber = regexp.MustCompile(`^job([0-9]+)_`)
+
+// lastJobNumber returns the highest job number among the logs in dir, or 0. A directory that
+// cannot be read counts as empty, noted in the diagnostic log: the numbers then start again,
+// and the logs' names still differ by their start time.
+func lastJobNumber(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		logging.L().Warn("job logs not read; job numbers start again", "dir", dir, "error", err.Error())
+	}
+	last := 0
+	for _, e := range entries {
+		if m := jobLogNumber.FindStringSubmatch(e.Name()); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				last = max(last, n)
+			}
+		}
+	}
+	return last
+}
+
+// earlierJobLog returns the log in owner's jobs/ of its job id, or "". With no such job in the
+// registry, the log is of a job started before hmj restarted.
+func earlierJobLog(owner string, id int) string {
+	if owner == "" {
+		return ""
+	}
+	dir := filepath.Join(owner, "jobs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if m := jobLogNumber.FindStringSubmatch(e.Name()); m != nil && m[1] == strconv.Itoa(id) {
+			return filepath.Join(dir, e.Name())
+		}
+	}
+	return ""
+}
+
+// missing is the error for owner's job id, which the registry does not hold: it gives the log
+// of a job of that number started before hmj restarted, or else the jobs owner has.
+func (r *JobRegistry) missing(owner string, id int) error {
+	if log := earlierJobLog(owner, id); log != "" {
+		return fmt.Errorf("background job %d was started before hmj restarted, so hmj no longer tracks it; if hmj was killed, it may still be running. Its output is in %s", id, log)
+	}
+	return fmt.Errorf("no background job %d; %s", id, r.ids(owner))
+}
+
+// jobStarted and jobEndTold find in a transcript the jobs the model was told it started, and
+// those whose end it heard of: by a finish notice, by check_command's word that the job is from
+// before a restart, or by a lost notice.
+var (
+	jobStarted = regexp.MustCompile(`\[(?:started background job|moved to the background by the user as job) ([0-9]+)[; ]`)
+	jobEndTold = regexp.MustCompile(`background job ([0-9]+) (?:finished:|was started before hmj restarted|never reported its end)`)
+)
+
+// LostJobs returns the jobs of owner that msgs, its conversation's transcript, says were
+// started but never says ended, and that this process does not track: hmj stopped, or was
+// killed, before telling the model. A job whose log is gone is left out.
+func (r *JobRegistry) LostJobs(owner string, msgs []chat.Message) []int {
+	if owner == "" {
+		return nil
+	}
+	var started []int
+	told := map[int]bool{}
+	for _, m := range msgs {
+		if (m.Role != "user" && m.Role != "tool") || !strings.Contains(m.Content, "background") {
+			continue
+		}
+		for _, sub := range jobStarted.FindAllStringSubmatch(m.Content, -1) {
+			if id, err := strconv.Atoi(sub[1]); err == nil && !slices.Contains(started, id) {
+				started = append(started, id)
+			}
+		}
+		for _, sub := range jobEndTold.FindAllStringSubmatch(m.Content, -1) {
+			if id, err := strconv.Atoi(sub[1]); err == nil {
+				told[id] = true
+			}
+		}
+	}
+	var lost []int
+	for _, id := range started {
+		if !told[id] && r.get(owner, id) == nil && earlierJobLog(owner, id) != "" {
+			lost = append(lost, id)
+		}
+	}
+	return lost
+}
+
+// LostNotices returns a notice for each of owner's LostJobs. Each is given to the model as a
+// finish notice is, and once in the transcript counts as told.
+func (r *JobRegistry) LostNotices(owner string, msgs []chat.Message) []string {
+	var notices []string
+	for _, id := range r.LostJobs(owner, msgs) {
+		if notice := lostNotice(owner, id); notice != "" {
+			notices = append(notices, notice)
+		}
+	}
+	return notices
+}
+
+// lostNotice tells the model of owner's job id, which hmj stopped before telling it the
+// end of: when its log was last written, its last lines and where the log is. It returns ""
+// when there is no log.
+func lostNotice(owner string, id int) string {
+	log := earlierJobLog(owner, id)
+	if log == "" {
+		return ""
+	}
+	f, err := os.Open(log)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	notice := fmt.Sprintf("[background job %d never reported its end, as hmj stopped first; this hmj does not track it, and if hmj was killed, the job may still be running. Its log was last written at %s.]",
+		id, info.ModTime().Format("2006-01-02 15:04:05"))
+	buf := make([]byte, min(info.Size(), jobTailBytes))
+	if n, err := f.ReadAt(buf, info.Size()-int64(len(buf))); err == nil || errors.Is(err, io.EOF) {
+		if tail := tailLines(string(buf[:n]), finishedJobLines, finishedJobBytes); tail != "" {
+			notice += "\n" + tail
+		}
+	}
+	return notice + "\n[its output is in " + log + "]"
+}
+
 // track adds j to the registry and records its end when its process ends.
 func (r *JobRegistry) track(j *Job) {
 	r.mu.Lock()
@@ -322,12 +473,12 @@ func (r *JobRegistry) track(j *Job) {
 	}()
 }
 
-// get returns job id, or nil.
-func (r *JobRegistry) get(id int) *Job {
+// get returns owner's job id, or nil.
+func (r *JobRegistry) get(owner string, id int) *Job {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, j := range r.jobs {
-		if j.ID == id {
+		if j.Owner == owner && j.ID == id {
 			return j
 		}
 	}
@@ -347,18 +498,20 @@ func (r *JobRegistry) waitEnded(j *Job) {
 	}
 }
 
-// ids lists the jobs for an error naming the ones that exist.
-func (r *JobRegistry) ids() string {
+// ids lists owner's jobs for an error naming the ones that exist.
+func (r *JobRegistry) ids(owner string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.jobs) == 0 {
-		return "there are no background jobs"
+	var names []string
+	for _, j := range r.jobs {
+		if j.Owner == owner {
+			names = append(names, fmt.Sprint(j.ID))
+		}
 	}
-	names := make([]string, len(r.jobs))
-	for i, j := range r.jobs {
-		names[i] = fmt.Sprint(j.ID)
+	if len(names) == 0 {
+		return "this conversation has no background jobs"
 	}
-	return "jobs: " + strings.Join(names, ", ")
+	return "this conversation's jobs: " + strings.Join(names, ", ")
 }
 
 // report describes job j for the model: a header with its state, up to lines of its latest
@@ -446,6 +599,7 @@ func (r *JobRegistry) Running(owner string) int {
 // JobLine is one job as /jobs lists it.
 type JobLine struct {
 	ID      int
+	Owner   string // the scratch directory of the job's conversation
 	Running bool
 	// Text is the job's number, state, time and command: "job 2  running 3m10s  ./gradlew …".
 	Text string
@@ -461,16 +615,16 @@ func (r *JobRegistry) List() []JobLine {
 		if !j.ended.IsZero() {
 			state = j.proc.ending() + " after " + formatElapsed(j.ended.Sub(j.Started))
 		}
-		lines[i] = JobLine{ID: j.ID, Running: j.ended.IsZero(), Text: fmt.Sprintf("job %d  %s  %s", j.ID, state, j.headline())}
+		lines[i] = JobLine{ID: j.ID, Owner: j.Owner, Running: j.ended.IsZero(), Text: fmt.Sprintf("job %d  %s  %s", j.ID, state, j.headline())}
 	}
 	return lines
 }
 
-// Stop stops job id, waiting until it has ended.
-func (r *JobRegistry) Stop(id int) error {
-	j := r.get(id)
+// Stop stops owner's job id, waiting until it has ended.
+func (r *JobRegistry) Stop(owner string, id int) error {
+	j := r.get(owner, id)
 	if j == nil {
-		return fmt.Errorf("no background job %d; %s", id, r.ids())
+		return r.missing(owner, id)
 	}
 	if !j.done() {
 		j.proc.stop()
@@ -478,17 +632,17 @@ func (r *JobRegistry) Stop(id int) error {
 	return nil
 }
 
-// StopForUser stops job id for the user's /jobs stop. The model hears of it with the user's
-// next message rather than in a turn of its own.
-func (r *JobRegistry) StopForUser(id int) error {
+// StopForUser stops owner's job id for the user's /jobs stop. The model hears of it with the
+// user's next message rather than in a turn of its own.
+func (r *JobRegistry) StopForUser(owner string, id int) error {
 	r.mu.Lock()
 	for _, j := range r.jobs {
-		if j.ID == id {
+		if j.Owner == owner && j.ID == id {
 			j.noWake = true
 		}
 	}
 	r.mu.Unlock()
-	return r.Stop(id)
+	return r.Stop(owner, id)
 }
 
 // StopAll stops every running job, as hmj exits.
@@ -521,14 +675,29 @@ func formatElapsed(d time.Duration) string {
 
 type backgroundKeyKey struct{}
 
+// backgroundKey is what WithBackgroundKey puts in a context.
+type backgroundKey struct {
+	keys  <-chan struct{}
+	moved func(job int)
+}
+
 // WithBackgroundKey returns a copy of ctx that carries keys, which receives when the user
-// presses Ctrl+B: a foreground run_command then moves to the background as a job.
-func WithBackgroundKey(ctx context.Context, keys <-chan struct{}) context.Context {
-	return context.WithValue(ctx, backgroundKeyKey{}, keys)
+// presses Ctrl+B: a foreground run_command then moves to the background as a job, and calls
+// moved, if not nil, with the job's number.
+func WithBackgroundKey(ctx context.Context, keys <-chan struct{}, moved func(job int)) context.Context {
+	return context.WithValue(ctx, backgroundKeyKey{}, backgroundKey{keys, moved})
 }
 
 // backgroundKeyFrom returns the Ctrl+B channel ctx carries, or nil, which never receives.
 func backgroundKeyFrom(ctx context.Context) <-chan struct{} {
-	keys, _ := ctx.Value(backgroundKeyKey{}).(<-chan struct{})
-	return keys
+	k, _ := ctx.Value(backgroundKeyKey{}).(backgroundKey)
+	return k.keys
+}
+
+// reportMovedToBackground tells the caller of WithBackgroundKey that Ctrl+B moved a command
+// to the background as job.
+func reportMovedToBackground(ctx context.Context, job int) {
+	if k, _ := ctx.Value(backgroundKeyKey{}).(backgroundKey); k.moved != nil {
+		k.moved(job)
+	}
 }

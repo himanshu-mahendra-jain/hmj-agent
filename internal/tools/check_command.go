@@ -67,12 +67,13 @@ func (t *CheckCommandTool) Execute(ctx context.Context, argsJSON string) (string
 	if err := json.Unmarshal([]byte(argsJSON), &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	j := Jobs.get(in.Job)
+	owner := scratchDirFrom(ctx)
+	j := Jobs.get(owner, in.Job)
 	if j == nil {
-		return "", fmt.Errorf("no background job %d; %s", in.Job, Jobs.ids())
+		return "", Jobs.missing(owner, in.Job)
 	}
 	if in.Stop {
-		if err := Jobs.Stop(in.Job); err != nil {
+		if err := Jobs.Stop(owner, in.Job); err != nil {
 			return "", err
 		}
 	} else if wait := min(in.WaitSeconds, maxCheckWaitSeconds); wait > 0 {

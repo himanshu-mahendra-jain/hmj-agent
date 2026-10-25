@@ -71,3 +71,31 @@ func TestCompletionsAccumulator(t *testing.T) {
 		t.Fatalf("unexpected usage: %+v", usage)
 	}
 }
+
+// A compatible server's error chunk mid-stream is reported, not taken for an empty reply.
+func TestCompletionsStreamErrorChunk(t *testing.T) {
+	acc := newCompletionsAccumulator(time.Now())
+	if err := acc.handle(`{"error":{"message":"Out of memory.","code":500}}`, nil, nil); err == nil || err.Error() != "chat completions stream error: Out of memory." {
+		t.Errorf("err = %v", err)
+	}
+	if err := acc.handle(`{"error":{}}`, nil, nil); err == nil || !strings.Contains(err.Error(), `{"error":{}}`) {
+		t.Errorf("err without a message = %v, want the chunk shown", err)
+	}
+}
+
+// OpenAI's own API and Azure OpenAI get max_completion_tokens; other servers max_tokens.
+func TestIsOpenAIHost(t *testing.T) {
+	for base, want := range map[string]bool{
+		"https://api.openai.com/v1":                   true,
+		"https://API.OpenAI.com/v1/chat/completions":  true,
+		"https://myres.openai.azure.com/openai/v1":    true,
+		"http://localhost:11434/v1":                   false,
+		"https://openrouter.ai/api/v1":                false,
+		"https://api.openai.com.evil.example/v1":      false,
+		"https://generativelanguage.googleapis.com/x": false,
+	} {
+		if got := isOpenAIHost(base); got != want {
+			t.Errorf("isOpenAIHost(%q) = %v, want %v", base, got, want)
+		}
+	}
+}

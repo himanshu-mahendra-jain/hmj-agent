@@ -36,9 +36,9 @@ hmj is a single-binary terminal coding agent for Linux. A user types a prompt, a
 | P3 | **Append-only history.** Sent history is never edited, except by compaction, which replaces everything after the system prompt. This keeps Anthropic thinking signatures valid and KV-cache prefixes stable. |
 | P4 | **Instant halt.** `Esc` / `Ctrl+C` MUST stop streaming or a running tool at once. Every tool call in the last assistant message MUST still get a tool result, so the next request is valid. |
 | P5 | **Sequential tools.** The tool calls of one step run one at a time, in order. |
-| P6 | **Quiet reads, loud writes.** Read-only tools print one summary line. Mutating tools print their parameters and, before they run, a diff of the change (`edit_file`: the whole call as it will apply; `write_file`: the file's current content against the new, or all lines added for a new file). A resumed transcript shows a `write_file` call without a diff, since the file has changed since. |
+| P6 | **Quiet reads, loud writes.** Read-only tools print one summary line. Mutating tools print their parameters and, before they run, a diff of the change (`edit_file`: the whole call as it will apply; `write_file`: the file's current content against the new, or all lines added for a new file). A resumed transcript shows a `write_file` call without a diff and an `edit_file` call as its old and new text, since the file has changed since; it keeps the turn's order, the model's text and then each call with its own result. |
 | P7 | **Signal safety.** `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT` restore the terminal and save the session, and only save once the running turn has let go of the conversation. |
-| P8 | **Durable sessions.** Writes are atomic (temp file, `fsync`, rename). A damaged file is set aside as `.corrupt`, never lost. |
+| P8 | **Durable sessions.** Writes are atomic (temp file, `fsync`, rename); a temp file older than a minute, left by a process that ended mid-write, is removed at the next start. A damaged file is set aside as `.corrupt`, never lost. |
 | P9 | **Safe terminal.** Text from a provider or a tool is sanitized of escape sequences before it reaches the terminal. |
 | P10 | **No ignored errors.** `make check` runs `cmd/droppederr`, nilness and deadcode. Errors wrap with `%w`. |
 | P11 | **Small context.** Workspace guidelines (`AGENTS.md` / `README.md`) are capped at 160 lines (`session/session.go:27`). The system prompt is fixed once a conversation has its first user message. |
@@ -85,7 +85,7 @@ flowchart TD
 
 ### 3.2 Runtime objects
 
-- **`app`** (`main.go`): holds the config, the active `ModelRef`, the `chat.Client`, the `agent.Runner`, the `SessionManager`, a root `ctx` that is cancelled at shutdown, a one-slot `busy` channel held while a turn changes the conversation, and the pending `Compaction`.
+- **`app`** (`main.go`): holds the config, the active `ModelRef`, the `chat.Client`, the `agent.Runner`, the `SessionManager`, a root `ctx` that is cancelled at shutdown, a one-slot `busy` channel held while a turn changes the conversation, the `exiting` lock taken by the exit that saves last, and the pending `Compaction`.
 - **`Runner`** (`agent/agent.go`): owns the tool set and its definitions, and runs a turn.
 - **`Client`** (`chat/chat.go`): one HTTP transport (no total timeout, HTTP/2, TLS ≥ 1.2, **redirects never followed**, compression off). It also holds the retry policy and the memory of detected protocols.
 - **`Jobs`** (`tools/background_jobs.go`): a registry of background shell jobs for the whole process, keyed by owner (the conversation's scratch directory).
@@ -179,7 +179,7 @@ flowchart TD
     U -- /health --> HE["reload config · probe models"]
     U -- /jobs --> JO["list / stop jobs"]
     U -- other text --> T["add to prompt history<br/>runTurn(conv, input)"]
-    T --> TT["reload config · take busy slot<br/>Runner.Run · StartCompaction · save"]
+    T --> TT["reload config · take busy slot<br/>Runner.Run (saves after each step)<br/>StartCompaction · save"]
     T0 --> TT
     TT --> P
     N --> P
@@ -255,11 +255,11 @@ stateDiagram-v2
 ```
 
 - Reasoning text is shown only in the status line (its latest sentence). The transcript keeps just `▸ Thought for Ns`, timed from the request or from the last answer text.
-- Answer text is sanitized, then rendered as Markdown line by line (headings, lists, quotes, rules, tables, inline bold, italic and code; fences shown as written). On a terminal it has a 2-column margin and word wrap.
+- Answer text is sanitized, then rendered as Markdown line by line (headings, lists, quotes, rules, tables, inline bold, italic and code; fences shown as written). On a terminal it has a 2-column margin and word wrap. A `[text](url)` link to a web page shows its text underlined, opened by a click (OSC 8); a link to a file (`file://` or a path) shows its text and then its path, relative to the working directory when inside it, also as an OSC 8 link, since a terminal such as ChromeOS's cannot open the container's files; wrapping never cuts a linked word. Other links are shown as written.
 - Each printed block (thought line, run of text, tool call) has exactly one blank line before it. Trailing newlines of the text are held back and printed only if more text follows.
 - While a tool call is being written, the status line shows `writing <tool>` and the size of its arguments so far. Anthropic gets `StreamArguments` (fine-grained tool streaming) for `edit_file` and `write_file`.
 
-**Verified by:** `internal/agent/thought_line_test.go` (reasoning collapses to `Thought for Ns`, timed from the request, latest sentence in the status line), `internal/agent/tool_call_writing_test.go` (status line names the tool call being written and its size), `internal/agent/transcript_spacing_test.go` (one blank line between blocks), `internal/chat/anthropic_tool_flags_test.go` (`StreamArguments`), `e2e/markdown_rendering_test.go` (Markdown, margin and wrap), `e2e/streaming_output_rendering_test.go` (control sequences from the model are sanitized, resize while streaming).
+**Verified by:** `internal/agent/thought_line_test.go` (reasoning collapses to `Thought for Ns`, timed from the request, latest sentence in the status line), `internal/agent/tool_call_writing_test.go` (status line names the tool call being written and its size), `internal/agent/transcript_spacing_test.go` (one blank line between blocks), `internal/chat/anthropic_tool_flags_test.go` (`StreamArguments`), `internal/terminal/markdown_links_test.go` (links, linked words kept whole), `e2e/markdown_rendering_test.go` (Markdown, margin and wrap), `e2e/streaming_output_rendering_test.go` (control sequences from the model are sanitized, resize while streaming).
 
 ### 5.5 Request retries (`chat/retry.go`, `chat/chat.go doStream`)
 
@@ -289,8 +289,9 @@ flowchart TD
 - Server-given waits (a `Retry-After` header, or a body hint such as "try again in 4m39s") MAY go past the 15s backoff cap, and get no jitter.
 - Errors include the provider's request ID when it sends one. A 3xx is reported as an error and never followed, so a key never reaches another host.
 - Up to 1MB of a non-2xx body is read to build the error.
+- An error inside the stream ends the step with the provider's code and message: Anthropic's `error` event, OpenAI Responses' `error` event or `response.failed` (retried for `server_error` and `rate_limit_exceeded`), and a Chat Completions chunk holding `error`.
 
-**Verified by:** `internal/chat/client_test.go` (retry on 429 and 500, no retry on other 4xx), `internal/chat/retry_test.go` (status codes, `Retry-After`, rate-limit body hints, retryable network errors), `internal/chat/stream_error_paths_test.go` (server wait plus 2s buffer, `Esc` during the wait), `internal/chat/stream_resilience_test.go` (stall aborted at the idle timeout and retried only before output), `internal/chat/anthropic_error_handling_test.go` (overloaded and in-stream errors retried before output, a stream that closes before its stop reason), `internal/chat/redirect_not_followed_test.go`, `internal/chat/rate_limit_hint_fuzz_test.go`.
+**Verified by:** `internal/chat/client_test.go` (retry on 429 and 500, no retry on other 4xx), `internal/chat/retry_test.go` (status codes, `Retry-After`, rate-limit body hints, retryable network errors), `internal/chat/stream_error_paths_test.go` (server wait plus 2s buffer, `Esc` during the wait), `internal/chat/stream_resilience_test.go` (stall aborted at the idle timeout and retried only before output), `internal/chat/anthropic_error_handling_test.go` (overloaded and in-stream errors retried before output, a stream that closes before its stop reason), `internal/chat/openai_responses_test.go` and `openai_chat_completions_test.go` (OpenAI in-stream errors), `internal/chat/redirect_not_followed_test.go`, `internal/chat/rate_limit_hint_fuzz_test.go`.
 
 ### 5.6 Protocol detection (`chat/wire_detect.go`)
 
@@ -341,7 +342,7 @@ flowchart TD
 - If a call's name, arguments and result all match the previous call's (and it returned no images), the result gets `[note: this call and its result are the same as your previous tool call's]`.
 - `Ctrl+Y` / `/history` always shows the full call and result.
 
-**Verified by:** `internal/agent/turn_footer_and_tool_output_test.go` (unknown tool answered with an error), `internal/agent/runner_test.go` `TestToolPanicRecoveryInRunner`, `internal/agent/oversized_tool_results_test.go` `TestToolResultIsCapped`, `internal/agent/repeated_call_test.go`, `internal/agent/tool_result_summary_test.go` (one-line summaries of quiet tools), `internal/agent/edit_call_display_test.go` and `internal/agent/write_call_display_test.go` (diff before the tool runs: overwrite, new file, unchanged content, a file over the size limit, none in a resumed transcript), `internal/audit/audit_test.go`, `e2e/tool_status_line_test.go` (latest output line of a running command).
+**Verified by:** `internal/agent/turn_footer_and_tool_output_test.go` (unknown tool answered with an error; a resumed transcript in the turn's order), `internal/agent/runner_test.go` `TestToolPanicRecoveryInRunner`, `internal/agent/oversized_tool_results_test.go` `TestToolResultIsCapped`, `internal/agent/repeated_call_test.go`, `internal/agent/tool_result_summary_test.go` (one-line summaries of quiet tools), `internal/agent/edit_call_display_test.go` and `internal/agent/write_call_display_test.go` (diff before the tool runs: overwrite, new file, unchanged content, a file over the size limit, none in a resumed transcript, where an edit shows its old and new text), `internal/audit/audit_test.go`, `e2e/tool_status_line_test.go` (latest output line of a running command).
 
 ### 5.8 Shell commands and background jobs
 
@@ -354,8 +355,8 @@ flowchart TD
     D -- exits --> E["head 16KB + tail 48KB<br/>full log → ~/.hmj/commands/ if cut"]
     D -- "timeout (60s, ≤ 30m)" --> E1(["output + '[command timed out]'"])
     D -- "Esc / Ctrl+C" --> E2(["kill pgid · '[command cancelled by user]'"])
-    D -- Ctrl+B --> MV["swap writer to job log<br/>extend timeout to 4h"] --> R1(["output so far + job N"])
-    E --> F["notes: exit code; exit 1 of grep/diff,<br/>141 SIGPIPE; sed -i / perl -i → use edit_file"]
+    D -- Ctrl+B --> MV["swap writer to job log<br/>extend timeout to 4h"] --> R1(["output so far + job N<br/>turn ends, prompt back"])
+    E --> F["notes: exit code; exit 1 of grep/diff,<br/>141 SIGPIPE; exit 0 with output held open;<br/>sed -i / perl -i → use edit_file"]
     F --> R2([result])
 ```
 
@@ -369,11 +370,13 @@ flowchart LR
     Q -- "prompt has text" --> P["notice prefixed to the user's message"]
 ```
 
-- A notice holds the headline (`exit N` / `timed out` / `stopped`), the last 20 lines (at most 4KB), and the log path.
-- `check_command` reports on a job (waits up to 120s for it, shows the last 100 lines / 16KB) or stops it. `/jobs` lists jobs and can stop one.
+- A notice holds the headline (`exit N` / `timed out` / `stopped`), the last 20 lines (at most 4KB), and the log path. A command that exited 0 while a process it left running (a server it started, the sleep of a subshell it killed) still held its output gets `exit 0 (… still held its output open, so hmj stopped reading there)`, in the foreground `[Exit code 0, but …]`, not Go's `exec: WaitDelay expired before I/O complete`.
+- The terminal shows each notice's first line, live and in a resumed transcript, which splits notices from the prompt they lead (`session.SplitJobNotices`) and from the tool result they end (`session.SplitTrailingJobNotices`). The prompt counts in the banner and `/resume` count only messages the user typed.
+- Each conversation numbers its own jobs, going on from the highest `job<N>_` log in its `jobs/` after a restart. `check_command` reaches only its conversation's jobs: it reports on one (waits up to 120s for it, shows the last 100 lines / 16KB) or stops it. Asked for a job that only a log in `jobs/` holds, one started before hmj restarted, it gives that log's path. A job the transcript shows started but never shows ended, which this hmj does not track because hmj stopped or was killed first, is told with the next message as finish notices are: `[background job N never reported its end, as hmj stopped first; …]` with when its log was last written, its last 20 lines and the log's path. Once in the transcript it counts as told. Until then, opening the conversation (at start or by `/resume`) prints `[background job N never reported its end, as hmj stopped first; the model hears of it with your next message]` after its history. `/jobs` lists every conversation's jobs, naming the conversation of those not started in the open one, and can stop one.
+- `run_command`'s description names the shell `sh` resolves to when it is not bash (dash, busybox), and the bash-only syntax it lacks (`$'\t'`, `[[ ]]`, arrays, `<(…)`), pointing to `bash -c` where bash is installed.
 - The prompt line counts running jobs. Exit and signals stop every job (`Jobs.StopAll`).
 
-**Verified by:** `internal/tools/run_command_output_test.go` (stdout and stderr in order, 16KB head and 48KB tail, full log saved and capped), `internal/tools/run_command_outcomes_test.go` (exit-code notes, timeouts), `internal/tools/run_command_in_place_edit_note_test.go`, `internal/tools/run_command_scratch_dir_test.go` (`$HMJ_SCRATCH`), `internal/tools/tools_test.go` (cancellation kills the process group, `TestRunCommandUserCancellation`), `internal/tools/background_jobs_test.go` (background start returns at once, job outlives the turn, `Ctrl+B` moves a command and lifts its timeout, `check_command` wait cap), `internal/terminal/wake_pipe_test.go` (wake ends an empty prompt), `e2e/background_jobs_test.go` (all three notice paths: idle wake, next tool result, prefix to a typed draft; `/jobs` and exit stop jobs).
+**Verified by:** `internal/tools/run_command_output_test.go` (stdout and stderr in order, 16KB head and 48KB tail, full log saved and capped), `internal/tools/run_command_outcomes_test.go` (exit-code notes, exit 0 with output held open by a leftover process, timeouts, the shell named in the description), `internal/tools/run_command_in_place_edit_note_test.go`, `internal/tools/run_command_scratch_dir_test.go` (`$HMJ_SCRATCH`), `internal/tools/tools_test.go` (cancellation kills the process group, `TestRunCommandUserCancellation`), `internal/tools/background_jobs_test.go` (background start returns at once, job outlives the turn, `Ctrl+B` moves a command and lifts its timeout, jobs numbered per conversation, a job from before a restart found by its log, jobs whose end was never told get a lost notice once, `check_command` wait cap), `internal/terminal/wake_pipe_test.go` (wake ends an empty prompt), `e2e/background_jobs_test.go` (all three notice paths: idle wake, next tool result, prefix to a typed draft; Ctrl+B ends the turn and skips the step's other calls; `/jobs` and exit stop jobs; a job lost to a restart is shown on reopening and told with the next message, once), `internal/agent/resumed_job_notices_test.go` (notices split from the prompt and from a tool result, shown by their first line on resume, not counted as prompts).
 
 ### 5.9 Compaction lifecycle
 
@@ -425,19 +428,22 @@ flowchart TD
 ```
 
 - **Save** writes only the active conversation and `state.json`, atomically (temp file, `fsync`, rename, mode 0600). Other conversations are written when they change (created, renamed, deactivated).
+- A turn saves as it goes (`Runner.Checkpoint`): once its user message is added and after each step's tool results, where the conversation can be sent again as it stands. A process killed outright (out of memory, `SIGKILL`) then loses at most the step under way.
 - **`/resume`** marks conversations locked by another hmj as `[open in another hmj]` and MUST NOT open, rename or delete them.
 - A conversation file that cannot be parsed is renamed to `.corrupt` (≤ 5 kept), and startup goes on.
 - **Scratch pruning** at startup: a directory unchanged for 7 days is removed, unless another hmj has its conversation open. An orphan directory (one with no conversation file) is removed after 1 hour.
 - Deleting a conversation removes its file, its scratch directory and its history file. Conversation IDs are never reused (`lastId`).
+- A conversation left unused (no user message, not compacted, still named `default` or `conversation-<id>`) is removed the same way when another becomes active. Save and Close keep it, so the next start reopens it.
 
-**Verified by:** `internal/session/shared_session_dir_test.go` (two managers share a directory, a conversation open elsewhere is refused, a save never overwrites another manager's conversation, deleted IDs are not reused), `internal/session/manager_test.go` (corrupt file set aside, backups pruned to 5), `internal/session/session_file_recovery_test.go` (save failures leave no temporary files, unreadable files skipped), `internal/session/scratch_test.go` (scratch pruning), `e2e/two_instances_share_sessions_test.go`, `e2e/corrupt_session_recovery_test.go`, `e2e/resume_delete_confirmation_test.go`.
+**Verified by:** `internal/session/shared_session_dir_test.go` (two managers share a directory, a conversation open elsewhere is refused, a save never overwrites another manager's conversation, deleted IDs are not reused, an unused conversation is removed when left), `internal/session/manager_test.go` (corrupt file set aside, backups pruned to 5), `internal/session/session_file_recovery_test.go` (save failures leave no temporary files, stale ones from an ended write are removed at load, unreadable files skipped), `internal/session/scratch_test.go` (scratch pruning), `e2e/two_instances_share_sessions_test.go`, `e2e/corrupt_session_recovery_test.go`, `e2e/resume_delete_confirmation_test.go`.
 
 ### 5.11 Shutdown
 
 ```mermaid
 flowchart TD
     S(["SIGINT/TERM/HUP/QUIT"]) --> A["cancel root ctx<br/>(stream aborts, tool pgids killed)"]
-    A --> B{"busy slot free<br/>within 5s?"}
+    A --> L["take the exit lock<br/>(waits for a normal exit under way)"]
+    L --> B{"busy slot free<br/>within 5s?"}
     B -- yes --> C["save session"]
     B -- no --> C2["warn: not saved<br/>(avoid half-written transcript)"]
     C --> D["Jobs.StopAll · restore termios"]
@@ -446,9 +452,9 @@ flowchart TD
     S2(["second signal during cleanup"]) --> Y["restore termios"] --> X
 ```
 
-A normal exit (`Ctrl+D` / EOF) finishes any compaction, saves, releases the conversation lock and stops every job.
+A normal exit (`Ctrl+D` / EOF) finishes any compaction, takes the exit lock, saves, releases the conversation lock and stops every job. The exit lock (`app.exiting`) is held until the process ends by whichever of the two exits takes it first, so a signal that arrives while hmj quits does not save again while the quit's `os.Exit` ends the process mid-write.
 
-**Verified by:** `main_test.go` (`TestWaitForTurnRefusesWhileTurnRuns`, `TestSecondSignalExitsAtOnce`, signal exit codes), `e2e/cli_test.go` (signals save the session and exit; a signal during a tool kills the child and saves; `Ctrl+D` exits cleanly), `e2e/ctrl_c_test.go` `TestCtrlCInterruptIsRestoredOnExit`.
+**Verified by:** `main_test.go` (`TestWaitForTurnRefusesWhileTurnRuns`, `TestSecondSignalExitsAtOnce`, `TestSignalDuringExitWaitsForIt`, signal exit codes), `e2e/cli_test.go` (signals save the session and exit; a signal during a tool kills the child and saves; a `SIGKILL` mid-turn keeps the finished steps; `Ctrl+D` exits cleanly), `e2e/ctrl_c_test.go` `TestCtrlCInterruptIsRestoredOnExit`.
 
 ---
 
@@ -458,7 +464,7 @@ Shared rules: paths are resolved by `ResolvePath`, which expands `~`, makes them
 
 | Tool | Parameters | Behaviour and limits |
 |---|---|---|
-| `read_file` | `path`, `offset`, `limit`, `numbered` (default true) | Streams lines. Without a `limit`: ≤ 2000 lines and 256KB, with a trailer giving the next `offset`. Files up to 10MB. A directory returns its listing. PNG, JPEG, GIF and WebP come back as an image (≤ 2000px a side, ≤ 3.75MB encoded). Other binary files get a one-line description. |
+| `read_file` | `path`, `offset`, `limit`, `numbered` (default true) | Streams lines. Without a `limit`: ≤ 2000 lines and 256KB, with a trailer giving the next `offset`. Files up to 10MB. A directory returns its listing. PNG, JPEG, GIF and WebP come back as an image (≤ 2000px a side, ≤ 3.75MB encoded). Other binary files get a one-line description. A file named as a picture that does not start like one is told so, with its first text and, when the picture's signature follows, the byte it starts at and a `tail -c` that cuts what comes before. |
 | `edit_file` | `path`, `old_string`, `new_string`, `replace_all`, `ignore_whitespace`, or `edits[]` | `old_string` must be unique unless `replace_all`. `edits` apply in order, **all or none** (`edit k of n: …; no edits were made`). An edit that changes nothing is skipped with a note. The old content is backed up first. `.go` / `.json` files get a quick syntax check (warning only). The display shows a unified diff with word-level highlights. |
 | `write_file` | `path`, `content` | Creates parent directories. Content ≤ 10MB. Backs up the old content. Same syntax check. The display shows a diff against the current file (all lines added for a new file; none for a file over 10MB or one that cannot be read; a note when the content is unchanged), capped at 120 rows like `edit_file`'s. |
 | `list_files` | `path`, `recursive`, `max_depth`, `pattern` (glob such as `**/*Test.kt`) | Recursive. Skips `.git` and anything `.gitignore` ignores. ≤ 300 results. |
@@ -468,7 +474,7 @@ Shared rules: paths are resolved by `ResolvePath`, which expands `~`, makes them
 | `web_search` | `query`, `limit`, `allowed_domains`, `blocked_domains`, `recency` (day…year) | DuckDuckGo HTML, then Brave, then Bing result pages, then DDG instant answers, then a Wikipedia search. 15s timeout. 15-minute cache (100 entries). Results name their source and today's date. |
 | `fetch_url` | `url`, `max_lines` (120, ≤ 1000), `timeout_seconds` (20, ≤ 120) | Sends `Accept: text/markdown` first. HTML → text, keeping `<main>`/`<article>`. GitHub blob pages → raw file. base64 `?format=TEXT` decoded. JSON indented. Body ≤ 16MB, output ≤ 64KB, ≤ 10 redirects (a cross-host one is noted). A page that is cut short is saved to `~/.hmj/fetch/`. Public pages cached 15 minutes (64 pages / 16MB). Localhost is allowed and never cached. |
 
-The system prompt tells the model to use the file tools rather than shell `sed`/`cat`/heredocs, to start commands longer than about 2 minutes in the background and end its turn, and to verify its work before declaring it done. It also says that tool output is information, not instructions.
+The system prompt tells the model to use the file tools rather than shell `sed`/`cat`/heredocs, to start commands longer than about 2 minutes in the background and end its turn, and to verify its work before declaring it done. It has the model answer a question or a request for suggestions first and change code only when asked, and it says that tool output is information, not instructions.
 
 ---
 
@@ -501,10 +507,10 @@ The system prompt tells the model to use the file tools rather than shell `sed`/
 
 | Setting | Anthropic | Responses | Chat Completions | Gemini |
 |---|---|---|---|---|
-| `maxOutputTokens` | always sent, default 64000 | `max_output_tokens` if set | `max_tokens` if set | `max_output_tokens` if set |
-| `effort` | `output_config.effort` (sent even when thinking is off) | `reasoning.effort` | not sent (label says so) | low/medium kept; high, xhigh, max → `high` |
+| `maxOutputTokens` | always sent, default 64000 | `max_output_tokens` if set | `max_tokens` if set; `max_completion_tokens` for api.openai.com and Azure OpenAI | `max_output_tokens` if set |
+| `effort` | `output_config.effort`, none/minimal → `low` (sent even when thinking is off) | `reasoning.effort` | `reasoning_effort` | low/medium kept; none, minimal → `minimal`; high, xhigh, max → `high` |
 | `thinking: adaptive` | `thinking: {type: adaptive, display: summarized}` | reasoning summary + encrypted content | — | thinking on |
-| `thinking: off` | no thinking field | no reasoning fields | — | — |
+| `thinking: off` | no thinking field | no reasoning fields (`store: false` is always sent) | — | — |
 | `speed: fast` | `speed: "fast"`; footer reports the steps that ran fast | ignored | ignored | ignored |
 
 ---
@@ -514,7 +520,8 @@ The system prompt tells the model to use the file tools rather than shell `sed`/
 | | Anthropic | OpenAI Responses | Chat Completions | Gemini Interactions |
 |---|---|---|---|---|
 | Endpoint | `POST /v1/messages` | `POST /responses` | `POST /chat/completions` | `POST /v1beta/interactions` |
-| Reasoning replay | `thinking` / `redacted_thinking` blocks with signatures | `reasoning` items (ID + encrypted content) | none | `thought_signature` on function calls |
+| Function tools | `name`, `description`, `input_schema` | `type`, `name`, `description`, `parameters` side by side, `strict: false` | `type` and `function: {name, description, parameters}` | `name`, `description`, `parameters` |
+| Reasoning replay | `thinking` / `redacted_thinking` blocks with signatures | `reasoning` items (ID + encrypted content); message items keep their `phase` (`BlockResponsesMessage`) | none | `thought_signature` on function calls |
 | Prompt caching | 3 breakpoints: end of system, last tool, last non-thinking block of the last message | automatic | automatic | automatic |
 | Images in tool results | yes | yes | replaced by a note | yes |
 | Compaction | native on-demand | `/responses/compact` | summary | summary |
@@ -527,7 +534,7 @@ All request bodies are encoded with **map keys sorted** (`json.Deterministic`), 
 ## 9. Terminal and UX requirements
 
 - **Input editor**: raw-mode line editor with bracketed paste (multi-line pastes never submit early), drag-and-drop path unquoting (`'…'`, `"…"`, `\ `, `file://`), wide-character layout, history with `↑`/`↓` that keeps the draft, shell editing keys, and OSC 133 prompt marks. `/` at an empty prompt opens a searchable command palette.
-- **Key listener during a turn**: termios with `ICANON|ECHO|ISIG` off, polling at 50ms. `Esc`/`Ctrl+C` halt and `Ctrl+B` moves the running command to the background. A key pressed after the turn ends belongs to the next prompt.
+- **Key listener during a turn**: termios with `ICANON|ECHO|ISIG` off, polling at 50ms. `Esc`/`Ctrl+C` halt and `Ctrl+B` moves the running command to the background. A Ctrl+B move ends the turn after that call's result, answering the step's remaining calls as cancelled, so the prompt comes back at once; the model hears of the job with the next message or when it ends. A key pressed after the turn ends belongs to the next prompt.
 - **Status line**: elapsed time, step N, `X in · Y out · Z tokens/s`, the current label (thinking…, writing tool, tool call line), and a detail (latest reasoning sentence, argument size, or latest output line). It shows `Ctrl+B: background` while a foreground `run_command` runs.
 - **Footer**: `[tokens: input (cached) · output · total [steps] · tokens/s · fast mode … · Ns total (TTFT) , done at HH:MM]`, plus a truncation warning when `finish_reason = length`. It is followed by a blank line and a dim divider before the next prompt.
 - **Halt notice** names the key that stopped the turn, printed after whatever the stopped step printed.

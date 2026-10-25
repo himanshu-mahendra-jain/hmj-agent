@@ -57,6 +57,7 @@ const (
 	MarkdownItalic
 	MarkdownCode
 	MarkdownHeading
+	MarkdownLink
 )
 
 // Markdown styles one run of the model's Markdown text. Every style the run is in is set in one
@@ -75,5 +76,17 @@ func Markdown(s string, st MarkdownStyle) string {
 	if st&MarkdownCode != 0 {
 		codes = append(codes, pal.Accent...)
 	}
+	if st&MarkdownLink != 0 {
+		codes = append(codes, paramUnderline)
+	}
 	return Style(s, codes...)
+}
+
+// Hyperlink makes s a link to url that the terminal opens when it is clicked (OSC 8), or
+// returns s as it is when colour is off. Terminals without OSC 8 show s alone.
+func Hyperlink(url, s string) string {
+	if !enabled || url == "" || s == "" {
+		return s
+	}
+	return "\x1b]8;;" + url + "\x1b\\" + s + "\x1b]8;;\x1b\\"
 }

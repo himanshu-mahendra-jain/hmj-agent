@@ -82,7 +82,7 @@ func BenchmarkResponsesRequest400KTokens(b *testing.B) {
 	tools := benchmarkTools()
 	b.ReportAllocs()
 	for b.Loop() {
-		body, err := encodeRequestBody(ResponsesRequest{Model: "gpt", Input: convertMessagesToInputItems(msgs), Stream: true, Tools: tools})
+		body, err := encodeRequestBody(ResponsesRequest{Model: "gpt", Input: convertMessagesToInputItems(msgs), Stream: true, Tools: responsesTools(tools)})
 		if err != nil {
 			b.Fatal(err)
 		}

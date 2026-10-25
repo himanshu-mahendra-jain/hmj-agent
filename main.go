@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -71,6 +72,11 @@ type app struct {
 	// busy is held while a turn mutates the active conversation.
 	// Shutdown takes it before saving, so the save never races those writes.
 	busy chan struct{}
+	// exiting is taken, and held until the process ends, by whichever of the normal exit and a
+	// signal's shutdown starts the final save first; the other waits for that exit. Otherwise a
+	// signal arriving as hmj quits saves again while the quit returns, and its os.Exit cuts that
+	// save short, leaving the conversation's temporary file behind.
+	exiting sync.Mutex
 	// lastSaveErr is the last session save failure shown, so a persistent
 	// failure (e.g. a read-only filesystem) is reported once, not every turn.
 	lastSaveErr string
@@ -133,6 +139,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	a.repl(bufio.NewReader(stdin))
 	a.finishCompaction()
+	a.exiting.Lock() // held until the process ends
 	a.saveSession()
 	if err := a.sm.Close(); err != nil {
 		logging.L().Warn("conversation lock not released", "error", err.Error())
@@ -275,7 +282,7 @@ func loadApp(forced forcedFlags) (*app, error) {
 
 	client := chat.NewClient(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
-	return &app{
+	a := &app{
 		configPath: configPath,
 		cfg:        cfg,
 		modelRef:   modelRef,
@@ -285,7 +292,10 @@ func loadApp(forced forcedFlags) (*app, error) {
 		ctx:        ctx,
 		cancel:     cancel,
 		busy:       make(chan struct{}, 1),
-	}, nil
+	}
+	// A turn saves as it goes; it holds the busy slot, so no shutdown saves at the same time.
+	a.runner.Checkpoint = a.saveSession
+	return a, nil
 }
 
 // errInsecureConfig is returned for a config with security warnings under --strict.
@@ -421,6 +431,7 @@ func exitOnSecondSignal(sigChan <-chan os.Signal, done <-chan struct{}) {
 // context can interrupt.
 func (a *app) shutdown(sig os.Signal) {
 	a.cancel()
+	a.exiting.Lock() // waits for a normal exit already under way; held until the process ends
 	if a.waitForTurn(shutdownGrace) {
 		a.saveSession()
 	}
@@ -467,7 +478,8 @@ func (a *app) activateStartupConversation() *session.Conversation {
 // printWelcome prints the banner and, when the conversation has messages, a summary of it.
 func printWelcome(conv *session.Conversation) {
 	agent.PrintBanner()
-	if count := conv.UserMessageCount(); count > 0 {
+	if conv.UserMessageCount() > 0 {
+		count := conv.PromptCount()
 		msgStr := "messages"
 		if count == 1 {
 			msgStr = "message"
@@ -567,7 +579,7 @@ func (a *app) dispatch(input string, action terminal.ShortcutAction, conv *sessi
 			reportError("/health", err)
 		}
 	case "/jobs":
-		if err := agent.HandleJobs(reader); err != nil {
+		if err := agent.HandleJobs(reader, conv.ScratchDir); err != nil {
 			reportError("/jobs", err)
 		}
 	default:

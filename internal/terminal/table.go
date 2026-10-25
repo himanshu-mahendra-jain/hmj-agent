@@ -140,12 +140,14 @@ const (
 	styleBold
 	styleItalic
 	styleCode
+	styleLink
 )
 
-// cellSpan is a run of visible cell text in one style.
+// cellSpan is a run of visible cell text in one style, and the URL it links to.
 type cellSpan struct {
 	text  string
 	style cellStyle
+	url   string
 }
 
 // cellLine is one visual line of a cell, as styled spans.
@@ -182,7 +184,9 @@ func (l cellLine) render(useUnicode bool) string {
 		case styleItalic:
 			b.WriteString(theme.Style(sp.text, "3"))
 		case styleCode:
-			b.WriteString(theme.Accent(sp.text))
+			b.WriteString(theme.Hyperlink(sp.url, theme.Accent(sp.text)))
+		case styleLink:
+			b.WriteString(theme.Hyperlink(sp.url, theme.Style(sp.text, "4")))
 		default:
 			b.WriteString(sp.text)
 		}
@@ -200,7 +204,7 @@ func parseCellMarkdown(s string) cellLine {
 	var plain strings.Builder
 	flush := func() {
 		if plain.Len() > 0 {
-			spans = append(spans, cellSpan{plain.String(), stylePlain})
+			spans = append(spans, cellSpan{text: plain.String()})
 			plain.Reset()
 		}
 	}
@@ -209,20 +213,35 @@ func parseCellMarkdown(s string) cellLine {
 		case '`':
 			if end := strings.IndexByte(s[i+1:], '`'); end > 0 {
 				flush()
-				spans = append(spans, cellSpan{s[i+1 : i+1+end], styleCode})
+				spans = append(spans, cellSpan{text: s[i+1 : i+1+end], style: styleCode})
 				i += end + 2
 				continue
+			}
+		case '[':
+			if text, dest, n, ok := markdownLink(s[i:]); ok {
+				if webURL, fileURL, path := linkTarget(dest); webURL != "" || fileURL != "" {
+					flush()
+					// The label's own markers are dropped, as inside bold
+					label := parseCellMarkdown(text).plain()
+					if webURL != "" {
+						spans = append(spans, cellSpan{label, styleLink, webURL})
+					} else if spans = append(spans, cellSpan{text: label}); label != path {
+						spans = append(spans, cellSpan{text: " ("}, cellSpan{path, styleCode, fileURL}, cellSpan{text: ")"})
+					}
+					i += n
+					continue
+				}
 			}
 		case '*':
 			if inner, ok := emphasisInner(s[i:], "**"); ok {
 				flush()
-				spans = append(spans, cellSpan{parseCellMarkdown(inner).plain(), styleBold})
+				spans = append(spans, cellSpan{text: parseCellMarkdown(inner).plain(), style: styleBold})
 				i += len(inner) + 4
 				continue
 			}
 			if inner, ok := emphasisInner(s[i:], "*"); ok {
 				flush()
-				spans = append(spans, cellSpan{parseCellMarkdown(inner).plain(), styleItalic})
+				spans = append(spans, cellSpan{text: parseCellMarkdown(inner).plain(), style: styleItalic})
 				i += len(inner) + 2
 				continue
 			}
@@ -258,7 +277,7 @@ func isCellSpace(c byte) bool {
 // stripCellMarkdown returns the visible text of a cell: what renderCellMarkdown draws, without
 // its styling. Column widths are measured on it.
 func stripCellMarkdown(s string) string {
-	if !strings.ContainsAny(s, "*`") {
+	if !strings.ContainsAny(s, "*`[") {
 		return s
 	}
 	return parseCellMarkdown(s).plain()
@@ -279,7 +298,7 @@ func cellWords(l cellLine) []cellLine {
 				continue
 			}
 			if start >= 0 {
-				cur = append(cur, cellSpan{sp.text[start:i], sp.style})
+				cur = append(cur, cellSpan{sp.text[start:i], sp.style, sp.url})
 				start = -1
 			}
 			if i < len(sp.text) && len(cur) > 0 {
@@ -307,7 +326,7 @@ func splitCellWord(w cellLine, width int) ([]cellLine, int) {
 			rw := VisibleWidth(string(r))
 			if curWidth > 0 && curWidth+rw > width {
 				if piece.Len() > 0 {
-					cur = append(cur, cellSpan{piece.String(), sp.style})
+					cur = append(cur, cellSpan{piece.String(), sp.style, sp.url})
 					piece.Reset()
 				}
 				chunks = append(chunks, cur)
@@ -317,7 +336,7 @@ func splitCellWord(w cellLine, width int) ([]cellLine, int) {
 			curWidth += rw
 		}
 		if piece.Len() > 0 {
-			cur = append(cur, cellSpan{piece.String(), sp.style})
+			cur = append(cur, cellSpan{piece.String(), sp.style, sp.url})
 		}
 	}
 	if len(cur) > 0 {
@@ -339,7 +358,7 @@ func wrapParagraph(p string, width int) []cellLine {
 	for _, w := range cellWords(line) {
 		wWidth := w.width()
 		if len(cur) > 0 && curWidth+1+wWidth <= width {
-			cur = append(cur, cellSpan{" ", stylePlain})
+			cur = append(cur, cellSpan{text: " "})
 			cur = append(cur, w...)
 			curWidth += 1 + wWidth
 			continue

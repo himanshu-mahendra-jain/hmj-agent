@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -75,8 +77,67 @@ func describeBinary(path, absPath string, head []byte, size int64) (string, bool
 	if strings.HasSuffix(kind.name, " image") {
 		return desc, true // its bytes would tell the model nothing more
 	}
+	if note, fixable := misnamedImageNote(path, head); note != "" {
+		desc += " " + note
+		if fixable {
+			return desc, true
+		}
+	}
 	hint := cmp.Or(kind.hint, "dump its start with run_command: xxd %s | head -40")
-	return desc + " read_file shows only text; " + strings.ReplaceAll(hint, "%s", shellQuote(path)), true
+	return desc + " read_file shows only text and pictures; " + strings.ReplaceAll(hint, "%s", shellQuote(path)), true
+}
+
+// pictureExts maps a picture's file extension to its kind and the signatures it starts with.
+var pictureExts = map[string]struct {
+	kind  string
+	magic []string
+}{
+	".png":  {"PNG image", []string{"\x89PNG\r\n\x1a\n"}},
+	".jpg":  {"JPEG image", []string{"\xff\xd8\xff"}},
+	".jpeg": {"JPEG image", []string{"\xff\xd8\xff"}},
+	".gif":  {"GIF image", []string{"GIF87a", "GIF89a"}},
+	".webp": {"WebP image", []string{"RIFF"}},
+}
+
+// misnamedImageNote explains a file named as a picture that does not start like one, as when
+// a command's warning went into the file ahead of the picture (adb's screencap on a device with
+// several displays). When the picture's signature follows in head, the note says where and
+// how to cut what comes before it, and fixable is true.
+func misnamedImageNote(path string, head []byte) (note string, fixable bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	pic, ok := pictureExts[ext]
+	if !ok {
+		return "", false
+	}
+	note = fmt.Sprintf("Its %s name says %s, but it starts with %s.", ext, pic.kind, quoteStart(head))
+	for _, m := range pic.magic {
+		if at := bytes.Index(head, []byte(m)); at > 0 {
+			fixed := strings.TrimSuffix(path, filepath.Ext(path)) + ".fixed" + filepath.Ext(path)
+			return note + fmt.Sprintf(" The %s starts at byte %d, after what looks like a command's message written into the file; cut that with run_command: tail -c +%d %s > %s, then read_file the new file.",
+				pic.kind, at, at+1, shellQuote(path), shellQuote(fixed)), true
+		}
+	}
+	return note, false
+}
+
+// quoteStart quotes the printable text head starts with, up to 40 characters.
+func quoteStart(head []byte) string {
+	end, n := 0, 0
+	for end < len(head) && n < 40 {
+		r, size := utf8.DecodeRune(head[end:])
+		if r == utf8.RuneError || !unicode.IsPrint(r) {
+			break
+		}
+		end += size
+		n++
+	}
+	if end == 0 {
+		return "no text"
+	}
+	if n == 40 {
+		return strconv.Quote(string(head[:end]) + "…")
+	}
+	return strconv.Quote(string(head[:end]))
 }
 
 // detectBinary reports whether head is the start of a binary file, and which kind when known.

@@ -88,6 +88,16 @@ func TestDefaultSystemPromptSendsLongCommandsToTheBackground(t *testing.T) {
 	}
 }
 
+// TestDefaultSystemPromptAnswersQuestionsWithoutActing checks that the prompt has the model
+// answer a question or a request for suggestions, and change code only when asked.
+func TestDefaultSystemPromptAnswersQuestionsWithoutActing(t *testing.T) {
+	for _, want := range []string{"answer it and propose changes, but make them only once the user asks", "change only what the user asked you to change", "Answer questions first, before starting long work."} {
+		if !strings.Contains(session.DefaultSystemPrompt, want) {
+			t.Errorf("DefaultSystemPrompt lacks %q", want)
+		}
+	}
+}
+
 // TestDefaultSystemPromptTreatsToolOutputAsInformation checks that the prompt tells the model
 // that fetched pages, files and command output do not instruct it, while steps the user points
 // it to are still followed.

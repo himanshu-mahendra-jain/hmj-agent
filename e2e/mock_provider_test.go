@@ -212,6 +212,36 @@ func callTool(name string, args map[string]any) reply {
 	}
 }
 
+// toolCall is one call of a reply from callTools.
+type toolCall struct {
+	name string
+	args map[string]any
+}
+
+// callTools replies with several tool calls in one step, in order.
+func callTools(calls ...toolCall) reply {
+	return func(w http.ResponseWriter, r *http.Request) {
+		startStream(w)
+		for i, c := range calls {
+			argJSON, err := json.Marshal(c.args)
+			if err != nil {
+				panic(err)
+			}
+			id := fmt.Sprintf("call_%d_%s", i, c.name)
+			item := fmt.Sprintf("item_%d_%s", i, c.name)
+			sse(w, "response.output_item.added", map[string]any{
+				"type": "response.output_item.added", "output_index": i,
+				"item": map[string]any{"id": item, "type": "function_call", "call_id": id, "name": c.name},
+			})
+			sse(w, "response.output_item.done", map[string]any{
+				"type": "response.output_item.done", "output_index": i,
+				"item": map[string]any{"id": item, "type": "function_call", "call_id": id, "name": c.name, "arguments": string(argJSON)},
+			})
+		}
+		completed(w)
+	}
+}
+
 // streamForever sends word on its own line every interval until the client goes away,
 // for halt tests. Whole lines, because hmj renders streamed text a line at a time.
 func streamForever(word string, interval time.Duration) reply {

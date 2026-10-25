@@ -15,13 +15,18 @@ import (
 	"time"
 )
 
-// PrintConversationHistory prints the transcript of a resumed conversation. A compaction is shown
-// as a notice, followed by its summary when the provider's summary can be read.
+// PrintConversationHistory prints the transcript of a resumed conversation in the order a turn
+// prints it: the model's text, then each tool call with its result. A compaction is shown as a
+// notice, followed by its summary when the provider's summary can be read.
 func PrintConversationHistory(conv *session.Conversation) {
 	calls := make(map[string]chat.ToolCall)
+	answered := make(map[string]bool)
 	for _, m := range conv.Messages {
 		for _, tc := range m.ToolCalls {
 			calls[tc.ID] = tc
+		}
+		if m.Role == "tool" {
+			answered[m.ToolCallID] = true
 		}
 	}
 
@@ -32,10 +37,19 @@ func PrintConversationHistory(conv *session.Conversation) {
 		case "system":
 			continue
 		case "user":
-			if lastRole != "" && lastRole != "user" {
-				fmt.Println()
+			// As in a turn: the prompt, then the first line of each job notice it carried, which
+			// brings its own blank line
+			notices, input := session.SplitJobNotices(m.Content)
+			if input != "" {
+				if lastRole != "" && lastRole != "user" {
+					fmt.Println()
+				}
+				fmt.Printf("%s %s %s\n", theme.Prompt(">"), theme.User("you:"), theme.Text(theme.Sanitize(input)))
 			}
-			fmt.Printf("%s %s %s\n", theme.Prompt(">"), theme.User("you:"), theme.Text(theme.Sanitize(m.Content)))
+			if len(notices) > 0 {
+				fmt.Println()
+				printJobNotices(notices)
+			}
 			lastRole = "user"
 			printedAny = true
 		case "assistant":
@@ -48,34 +62,69 @@ func PrintConversationHistory(conv *session.Conversation) {
 				printedAny = true
 				continue
 			}
-			for _, tc := range m.ToolCalls {
-				switch {
-				case quietTools[tc.Function.Name]: // a quiet call is printed with its result
-				case tc.Function.Name == "write_file":
-					// The file has been written since, so a diff against it would be wrong.
-					fmt.Printf("\n%s\n", toolCallLine(tc.Function.Name, tc.Function.Arguments))
-				default:
-					printExpandedToolCall(tc.Function.Name, tc.Function.Arguments)
-				}
-			}
 			if m.Content != "" {
 				fmt.Printf("\n%s\n", terminal.RenderMarkdown(theme.Sanitize(m.Content)))
+			}
+			// A call is printed with its result, as it ran; one never answered, here.
+			for _, tc := range m.ToolCalls {
+				if !answered[tc.ID] && !quietTools[tc.Function.Name] {
+					printResumedToolCall(tc)
+				}
 			}
 			lastRole = "assistant"
 			printedAny = true
 		case "tool":
 			tc := calls[m.ToolCallID]
+			// Jobs that finished while the tool ran are told after its result, as in the turn
+			output, notices := session.SplitTrailingJobNotices(m.Content)
 			if quietTools[tc.Function.Name] {
-				printQuietToolResult(tc.Function.Name, tc.Function.Arguments, m.Content, len(m.Images) > 0, 0)
+				printQuietToolResult(tc.Function.Name, tc.Function.Arguments, output, len(m.Images) > 0, 0)
 			} else {
-				printExpandedToolResult(tc.Function.Name, m.Content)
+				printResumedToolCall(tc)
+				printExpandedToolResult(tc.Function.Name, output)
 			}
+			printJobNotices(notices)
 			lastRole = "tool"
 			printedAny = true
 		}
 	}
 	if printedAny {
 		fmt.Println()
+	}
+	printLostJobs(conv)
+}
+
+// printLostJobs tells the user of a resumed conversation's jobs whose end the model never
+// heard of, which it is told of with the next message.
+func printLostJobs(conv *session.Conversation) {
+	lost := tools.Jobs.LostJobs(conv.ScratchDir, conv.Messages)
+	if len(lost) == 0 {
+		return
+	}
+	ids := make([]string, len(lost))
+	for i, id := range lost {
+		ids[i] = fmt.Sprint(id)
+	}
+	what := "background job " + ids[0] + " never reported its end"
+	if len(ids) > 1 {
+		what = "background jobs " + strings.Join(ids, ", ") + " never reported their end"
+	}
+	fmt.Printf("%s\n\n", theme.Info("["+what+", as hmj stopped first; the model hears of it with your next message]"))
+}
+
+// printResumedToolCall prints a non-quiet tool call of a resumed transcript. The files it
+// changed have changed since, so a write_file call shows no diff and an edit_file call shows
+// its old and new text.
+func printResumedToolCall(tc chat.ToolCall) {
+	switch tc.Function.Name {
+	case "":
+		// A result whose call is missing has no call line.
+	case "write_file":
+		fmt.Printf("\n%s\n", toolCallLine(tc.Function.Name, tc.Function.Arguments))
+	case "edit_file":
+		printResumedEditCall(tc.Function.Arguments)
+	default:
+		printExpandedToolCall(tc.Function.Name, tc.Function.Arguments)
 	}
 }
 
@@ -265,11 +314,7 @@ func printEditFileDiff(path, oldStr, newStr string) {
 // When that fails (the tool will report why), it falls back to printEditFileDiff for a
 // single edit, or minus/plus blocks for each of several.
 func printEditCall(argsJSON, path, oldStr, newStr string, edits []any) {
-	if len(edits) == 0 {
-		fmt.Printf("\n%s %s\n", theme.ToolBadge("edit_file"), theme.FilePath(theme.Sanitize(path)))
-	} else {
-		fmt.Printf("\n%s %s %s\n", theme.ToolBadge("edit_file"), theme.FilePath(theme.Sanitize(path)), theme.Muted(fmt.Sprintf("(%d edits)", len(edits))))
-	}
+	printEditCallLine(path, len(edits))
 	if before, after, err := tools.PreviewEdit(argsJSON); err == nil {
 		if d := diff.Text(path, before, after, diff.Options{Inline: true, MaxLines: maxDiffRows}); !d.Empty() {
 			printDiff(d)
@@ -280,6 +325,39 @@ func printEditCall(argsJSON, path, oldStr, newStr string, edits []any) {
 		printEditFileDiff(path, oldStr, newStr)
 		return
 	}
+	printEachEditBlocks(edits)
+}
+
+// printResumedEditCall renders an edit_file call of a resumed transcript from its arguments
+// alone, as minus/plus blocks: the file has changed since, so a diff against it would be wrong.
+func printResumedEditCall(argsJSON string) {
+	var raw map[string]any
+	if json.Unmarshal([]byte(argsJSON), &raw) != nil {
+		fmt.Printf("\n%s\n", toolCallLine("edit_file", argsJSON))
+		return
+	}
+	get := func(key string) string { s, _ := raw[key].(string); return s }
+	edits, _ := raw["edits"].([]any)
+	printEditCallLine(get("path"), len(edits))
+	if len(edits) == 0 {
+		printEditBlocks(get("old_string"), get("new_string"))
+		return
+	}
+	printEachEditBlocks(edits)
+}
+
+// printEditCallLine prints an edit_file call's line: its path and, for a call with an edits
+// list, how many edits it makes.
+func printEditCallLine(path string, edits int) {
+	if edits == 0 {
+		fmt.Printf("\n%s %s\n", theme.ToolBadge("edit_file"), theme.FilePath(theme.Sanitize(path)))
+		return
+	}
+	fmt.Printf("\n%s %s %s\n", theme.ToolBadge("edit_file"), theme.FilePath(theme.Sanitize(path)), theme.Muted("("+plural(edits, "edit")+")"))
+}
+
+// printEachEditBlocks shows each of an edits list's replacements as minus/plus blocks.
+func printEachEditBlocks(edits []any) {
 	for _, e := range edits {
 		m, _ := e.(map[string]any)
 		oldStr, _ := m["old_string"].(string)

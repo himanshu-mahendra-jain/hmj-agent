@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -22,6 +23,8 @@ type InputItem struct {
 	Name      string `json:"name,omitempty"`      // function name
 	Arguments string `json:"arguments,omitempty"` // function arguments
 	Output    any    `json:"output,omitzero"`     // tool output: a string, or with images []responsesOutputPart
+	// Phase labels an assistant message "commentary" or "final_answer", as the model did.
+	Phase string `json:"phase,omitempty"`
 	// ID, EncryptedContent and Summary replay a reasoning item. Summary is a pointer so an
 	// empty summary is still sent as [].
 	ID               string    `json:"id,omitempty"`
@@ -31,6 +34,12 @@ type InputItem struct {
 	// returned it in place of the fields above.
 	Raw jsontext.Value `json:"-"`
 }
+
+// BlockResponsesMessage is one message item of a Responses API reply that the model labelled with
+// a phase: Text holds its text and Signature its phase ("commentary" or "final_answer"). The
+// message's Content still holds all its text; these let the items go back as they came, phase
+// and all, which OpenAI says later models need.
+const BlockResponsesMessage = "responses_message"
 
 // responsesOutputPart is one part of a function_call_output that carries images.
 type responsesOutputPart struct {
@@ -73,17 +82,39 @@ func (it InputItem) MarshalJSONTo(enc *jsontext.Encoder) error {
 
 // ResponsesRequest is the body of a POST /responses request.
 type ResponsesRequest struct {
-	Model  string           `json:"model"`
-	Input  []InputItem      `json:"input"`
-	Stream bool             `json:"stream"`
-	Tools  []ToolDefinition `json:"tools,omitempty"`
-	// Store is false when reasoning is requested, so reasoning comes back as encrypted content that is
-	// replayed in later turns. It is absent when reasoning is off.
-	Store     *bool               `json:"store,omitempty"`
+	Model  string          `json:"model"`
+	Input  []InputItem     `json:"input"`
+	Stream bool            `json:"stream"`
+	Tools  []responsesTool `json:"tools,omitempty"`
+	// Store is always false: hmj sends the whole conversation each turn and never reads a stored
+	// response back, which OpenAI would otherwise keep for 30 days. Reasoning then comes back as
+	// encrypted content, replayed in later turns.
+	Store     bool                `json:"store"`
 	Include   []string            `json:"include,omitempty"`
 	Reasoning *responsesReasoning `json:"reasoning,omitempty"`
 	// MaxOutputTokens caps the generated tokens; it is sent only when the model sets maxOutputTokens.
 	MaxOutputTokens int `json:"max_output_tokens,omitzero"`
+}
+
+// responsesTool is a function tool as the Responses API takes it: its name, description and
+// parameters beside its type, not under "function" as Chat Completions nests them.
+type responsesTool struct {
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  Schema `json:"parameters,omitempty"`
+	// Strict is sent as false: left out, the API makes a schema strict where it can, which
+	// makes every property required, and the tools' optional arguments would stop being so.
+	Strict bool `json:"strict"`
+}
+
+// responsesTools converts tool definitions to the Responses API's shape.
+func responsesTools(tools []ToolDefinition) []responsesTool {
+	out := make([]responsesTool, len(tools))
+	for i, t := range tools {
+		out[i] = responsesTool{Type: "function", Name: t.Function.Name, Description: t.Function.Description, Parameters: t.Function.Parameters}
+	}
+	return out
 }
 
 // responsesReasoning configures reasoning effort and the streamed reasoning summary.
@@ -99,6 +130,9 @@ type responsesStreamEvent struct {
 	ItemID       string `json:"item_id"`
 	CallID       string `json:"call_id"`
 	Delta        string `json:"delta"`
+	// Code and Message describe an "error" event.
+	Code    string `json:"code"`
+	Message string `json:"message"`
 
 	Item *struct {
 		ID               string `json:"id"`
@@ -111,6 +145,12 @@ type responsesStreamEvent struct {
 		Summary          []struct {
 			Text string `json:"text"`
 		} `json:"summary"`
+		// Phase and Content are a message item's label and its parts.
+		Phase   string `json:"phase"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
 	} `json:"item,omitempty"`
 
 	Arguments string `json:"arguments,omitempty"`
@@ -122,6 +162,11 @@ type responsesStreamEvent struct {
 		// IncompleteDetails explains a "response.incomplete" stream end,
 		// e.g. reason "max_output_tokens".
 		IncompleteDetails *responsesIncompleteDetails `json:"incomplete_details,omitempty"`
+		// Error explains a "response.failed" stream end.
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
 	} `json:"response,omitempty"`
 
 	Usage *TokenUsage `json:"usage,omitempty"`
@@ -166,7 +211,9 @@ func convertMessagesToInputItems(messages []Message) []InputItem {
 					Summary:          &[]string{},
 				})
 			}
-			if msg.Content != "" {
+			if phased := phasedMessages(msg); phased != nil {
+				items = append(items, phased...)
+			} else if msg.Content != "" {
 				items = append(items, InputItem{
 					Type:    "message",
 					Role:    "assistant",
@@ -187,6 +234,18 @@ func convertMessagesToInputItems(messages []Message) []InputItem {
 				Role:    msg.Role,
 				Content: msg.Content,
 			})
+		}
+	}
+	return items
+}
+
+// phasedMessages returns msg's message items with their phases, or nil when the model labelled
+// none.
+func phasedMessages(msg Message) []InputItem {
+	var items []InputItem
+	for _, b := range msg.Blocks {
+		if b.Type == BlockResponsesMessage {
+			items = append(items, InputItem{Type: "message", Role: "assistant", Content: b.Text, Phase: b.Signature})
 		}
 	}
 	return items
@@ -225,12 +284,10 @@ func (c *Client) streamResponsesOnce(
 		Model:           model.ID,
 		Input:           inputItems,
 		Stream:          true,
-		Tools:           tools,
+		Tools:           responsesTools(tools),
 		MaxOutputTokens: model.MaxOutputTokens,
 	}
 	if thinking {
-		store := false
-		reqPayload.Store = &store
 		reqPayload.Include = []string{"reasoning.encrypted_content"}
 		reqPayload.Reasoning = &responsesReasoning{Effort: model.Effort, Summary: "auto"}
 	}
@@ -282,6 +339,8 @@ type responsesAccumulator struct {
 	finishReason string
 	// reasoning holds the reasoning items of the response, replayed in later turns.
 	reasoning []Block
+	// messages holds the response's message items that came with a phase.
+	messages []Block
 }
 
 // reasoningBlock builds the replayable block for a completed reasoning output item. The item ID is
@@ -367,6 +426,22 @@ func (a *responsesAccumulator) handle(evType, data string, onReasoning, onDelta 
 		if ev.Item != nil && ev.Item.Type == "reasoning" {
 			a.reasoning = append(a.reasoning, reasoningBlock(ev.Item.ID, ev.Item.EncryptedContent, ev.Item.Summary))
 		}
+		if ev.Item != nil && ev.Item.Type == "message" && ev.Item.Phase != "" {
+			var text strings.Builder
+			for _, part := range ev.Item.Content {
+				if part.Type == "output_text" {
+					text.WriteString(part.Text)
+				}
+			}
+			a.messages = append(a.messages, Block{Type: BlockResponsesMessage, Text: text.String(), Signature: ev.Item.Phase})
+		}
+	case "error":
+		return responsesStreamError(ev.Code, ev.Message, data)
+	case "response.failed":
+		if ev.Response != nil && ev.Response.Error != nil {
+			return responsesStreamError(ev.Response.Error.Code, ev.Response.Error.Message, data)
+		}
+		return responsesStreamError("", "", data)
 	case "response.completed", "response.done", "response.incomplete":
 		if ev.Response != nil {
 			if ev.Response.Usage != nil {
@@ -377,6 +452,21 @@ func (a *responsesAccumulator) handle(evType, data string, onReasoning, onDelta 
 	}
 
 	return nil
+}
+
+// responsesStreamError turns an "error" event, or the error of a "response.failed" one, into a Go
+// error; data, the event, stands in when it gives no message. A server error or a rate limit is
+// wrapped as retryableStreamError, so the retry loop can try again before output starts.
+func responsesStreamError(code, message, data string) error {
+	if message == "" {
+		return fmt.Errorf("openai stream error: %s", truncateErrorBody([]byte(data), maxShownErrorRunes))
+	}
+	err := fmt.Errorf("openai error (%s): %s", cmp.Or(code, "no code"), message)
+	switch code {
+	case "server_error", "rate_limit_exceeded":
+		return &retryableStreamError{err: err}
+	}
+	return err
 }
 
 // markFirstToken records the arrival time of the first model output, once.
@@ -501,6 +591,6 @@ func (a *responsesAccumulator) result() (Message, *TokenUsage) {
 		Role:      "assistant",
 		Content:   a.contentBuilder.String(),
 		ToolCalls: toolCalls,
-		Blocks:    a.reasoning,
+		Blocks:    slices.Concat(a.reasoning, a.messages),
 	}, usage
 }

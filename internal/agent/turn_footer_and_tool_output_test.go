@@ -291,3 +291,34 @@ func TestConversationHistorySeparatesTurns(t *testing.T) {
 		t.Errorf("system prompt was printed: %q", out)
 	}
 }
+
+// TestConversationHistoryKeepsTheTurnsOrder checks that a resumed transcript prints a step as
+// the turn did: the model's text first, then each tool call followed by its own result, also
+// when the model made several calls at once; a call never answered still shows.
+func TestConversationHistoryKeepsTheTurnsOrder(t *testing.T) {
+	call := func(id, name, args string) chat.ToolCall {
+		return chat.ToolCall{ID: id, Type: "function", Function: chat.ToolCallFunction{Name: name, Arguments: args}}
+	}
+	conv := &session.Conversation{Messages: []chat.Message{
+		{Role: "user", Content: "start the emulator"},
+		{Role: "assistant", Content: "Let me check the devices.", ToolCalls: []chat.ToolCall{
+			call("c1", "read_file", `{"path":"README.md"}`),
+			call("c2", "run_command", `{"command":"echo first"}`),
+			call("c3", "run_command", `{"command":"echo second"}`),
+		}},
+		{Role: "tool", ToolCallID: "c1", Content: "readme"},
+		{Role: "tool", ToolCallID: "c2", Content: "FIRST OUTPUT"},
+		{Role: "tool", ToolCallID: "c3", Content: "SECOND OUTPUT"},
+		{Role: "assistant", ToolCalls: []chat.ToolCall{call("c4", "run_command", `{"command":"echo never answered"}`)}},
+	}}
+	out := theme.StripANSI(captureOutput(t, func() { PrintConversationHistory(conv) }))
+	order := []string{"Let me check the devices.", "read_file: README.md", "echo first", "FIRST OUTPUT", "echo second", "SECOND OUTPUT", "echo never answered"}
+	at := 0
+	for _, want := range order {
+		i := strings.Index(out[at:], want)
+		if i < 0 {
+			t.Fatalf("%q missing or out of order (want %q) in:\n%s", want, order, out)
+		}
+		at += i + len(want)
+	}
+}

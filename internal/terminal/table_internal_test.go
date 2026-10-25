@@ -61,7 +61,7 @@ func TestSplitCellWordByWidth(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			chunks, lastW := splitCellWord(cellLine{{tc.word, stylePlain}}, tc.width)
+			chunks, lastW := splitCellWord(cellLine{{tc.word, stylePlain, ""}}, tc.width)
 			var got []string
 			if chunks != nil {
 				got = plainLines(chunks)

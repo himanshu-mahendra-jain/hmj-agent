@@ -183,6 +183,15 @@ func writeInline(sb *strings.Builder, s string, st theme.MarkdownStyle) {
 			run.WriteString(s[i : i+n])
 			i += n
 			continue
+		case c == '[':
+			if text, dest, n, ok := markdownLink(s[i:]); ok {
+				if webURL, fileURL, path := linkTarget(dest); webURL != "" || fileURL != "" {
+					flush()
+					writeLink(sb, text, webURL, fileURL, path, st)
+					i += n
+					continue
+				}
+			}
 		case c == '*':
 			n := markerRun(s, i, '*')
 			if n <= 2 {
@@ -205,6 +214,24 @@ func writeInline(sb *strings.Builder, s string, st theme.MarkdownStyle) {
 		i++
 	}
 	flush()
+}
+
+// writeLink writes a link in the style st: a web page's as its text, underlined, which the
+// terminal opens; a file's as its text and then its path, unless the text is the path.
+func writeLink(sb *strings.Builder, text, webURL, fileURL, path string, st theme.MarkdownStyle) {
+	var label strings.Builder
+	if webURL != "" {
+		writeInline(&label, text, st|theme.MarkdownLink)
+		sb.WriteString(theme.Hyperlink(webURL, label.String()))
+		return
+	}
+	writeInline(&label, text, st)
+	sb.WriteString(label.String())
+	if theme.StripANSI(label.String()) != path {
+		sb.WriteString(theme.Markdown(" (", st))
+		sb.WriteString(theme.Hyperlink(fileURL, theme.Markdown(path, st|theme.MarkdownCode)))
+		sb.WriteString(theme.Markdown(")", st))
+	}
 }
 
 // isEscapable reports whether a backslash before c is Markdown's escape, which is not shown. Only
@@ -289,18 +316,31 @@ func RenderMarkdown(text string) string {
 	return sb.String()
 }
 
-// styledRune is a visible rune of styled text and the escape sequences in effect for it.
+// styledRune is a visible rune of styled text, the escape sequences in effect for it and the
+// URL of the link it is in, if any.
 type styledRune struct {
 	r     rune
 	style string
+	link  string
 }
 
 // parseStyled splits s into its visible runes, each with the SGR sequences set before it since
-// the last reset.
+// the last reset and the URL of the OSC 8 link it is in.
 func parseStyled(s string) []styledRune {
 	out := make([]styledRune, 0, utf8.RuneCountInString(s)) // the escapes count too, but rarely
-	style := ""
+	style, link := "", ""
 	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == ']' {
+			end := strings.Index(s[i:], "\x1b\\")
+			if end < 0 {
+				end = len(s) - i
+			}
+			if params, ok := strings.CutPrefix(s[i+2:i+end], "8;"); ok {
+				_, link, _ = strings.Cut(params, ";")
+			}
+			i += end + 2
+			continue
+		}
 		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
 			j := i + 2
 			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
@@ -317,18 +357,27 @@ func parseStyled(s string) []styledRune {
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
-		out = append(out, styledRune{r, style})
+		out = append(out, styledRune{r, style, link})
 		i += size
 	}
 	return out
 }
 
-// renderStyled writes runes back as text, setting each change of style and resetting at the
-// end, so every line stands on its own.
+// renderStyled writes runes back as text, setting each change of style and link and resetting
+// and closing the link at the end, so every line stands on its own.
 func renderStyled(rs []styledRune) string {
 	var b strings.Builder
-	cur := ""
+	cur, link := "", ""
 	for _, c := range rs {
+		if c.link != link {
+			if link != "" {
+				b.WriteString(closeLink)
+			}
+			if c.link != "" {
+				b.WriteString("\x1b]8;;" + c.link + "\x1b\\")
+			}
+			link = c.link
+		}
 		if c.style != cur {
 			if cur != "" {
 				b.WriteString(theme.Reset())
@@ -341,11 +390,33 @@ func renderStyled(rs []styledRune) string {
 	if cur != "" {
 		b.WriteString(theme.Reset())
 	}
+	if link != "" {
+		b.WriteString(closeLink)
+	}
 	return b.String()
 }
 
+// closeLink ends an OSC 8 link.
+const closeLink = "\x1b]8;;\x1b\\"
+
+// inLinkedWord reports whether the word that rs[i] is in, between spaces, has a rune of a link.
+func inLinkedWord(rs []styledRune, i int) bool {
+	for j := i; j >= 0 && rs[j].r != ' '; j-- {
+		if rs[j].link != "" {
+			return true
+		}
+	}
+	for j := i + 1; j < len(rs) && rs[j].r != ' '; j++ {
+		if rs[j].link != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // wrapStyled breaks styled text into lines of at most first columns, then rest, at spaces; a word
-// longer than a line is cut. The spaces at a break are dropped, and each line carries the styles
+// longer than a line is cut, unless it is in a link, which the terminal could no longer open
+// whole: that word is left on a line of its own, wider than the rest. The spaces at a break are dropped, and each line carries the styles
 // in effect, so bold that is broken across lines stays bold on both.
 func wrapStyled(s string, first, rest int) []string {
 	rs := parseStyled(s)
@@ -372,6 +443,10 @@ func wrapStyled(s string, first, rest int) []string {
 		end := cut
 		if rs[i].r == ' ' && seenWord {
 			end = i
+		}
+		if end <= 0 && inLinkedWord(rs, i) {
+			for end = i; end < len(rs) && rs[end].r != ' '; end++ {
+			}
 		}
 		if end <= 0 {
 			end = max(i, 1) // no space to break at: cut the word

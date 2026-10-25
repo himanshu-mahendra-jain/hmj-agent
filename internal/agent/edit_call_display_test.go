@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"hmj-agent/internal/chat"
+	"hmj-agent/internal/session"
 	"hmj-agent/internal/terminal/theme"
 )
 
@@ -80,4 +82,41 @@ func TestEditCallThatWillFailShowsEachEdit(t *testing.T) {
 		}
 	}
 	assertNoInjectedControls(t, out)
+}
+
+// TestResumedEditCallShowsNoDiff checks that an edit_file call in a resumed transcript shows its
+// old and new text as written, not a diff against the file as it is now: an insertion whose
+// anchor is still there would otherwise be applied a second time and shown as a duplicate.
+func TestResumedEditCallShowsNoDiff(t *testing.T) {
+	theme.SetEnabled(false)
+	path := filepath.Join(t.TempDir(), "imports.kt")
+	if err := os.WriteFile(path, []byte("import a.remember\nimport a.rememberSaveable\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	args, err := json.Marshal(map[string]any{"path": path, "old_string": "import a.remember\n", "new_string": "import a.remember\nimport a.rememberSaveable\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv := &session.Conversation{Messages: []chat.Message{
+		{Role: "user", Content: "add the import"},
+		{Role: "assistant", ToolCalls: []chat.ToolCall{{ID: "e1", Type: "function", Function: chat.ToolCallFunction{Name: "edit_file", Arguments: string(args)}}}},
+		{Role: "tool", ToolCallID: "e1", Content: "successfully replaced 1 occurrence(s) in " + path},
+	}}
+	out := captureOutput(t, func() { PrintConversationHistory(conv) })
+	if strings.Contains(out, "+1 lines") || strings.Contains(out, "3 + ") {
+		t.Errorf("a resumed edit_file call shows a diff against the file as it is now:\n%s", out)
+	}
+	for _, want := range []string{"edit_file: " + path + "\n", "-  import a.remember", "+ import a.rememberSaveable"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+}
+
+// TestEditCallCountsOneEdit checks that an edits list of one is not counted as "1 edits".
+func TestEditCallCountsOneEdit(t *testing.T) {
+	out := editCallOutput(t, map[string]any{"path": filepath.Join(t.TempDir(), "absent.txt"), "edits": []map[string]any{{"old_string": "a", "new_string": "b"}}})
+	if !strings.Contains(out, "(1 edit)") {
+		t.Errorf("no \"(1 edit)\" in:\n%s", out)
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,6 +33,9 @@ func (t *RunCommandTool) Definition() chat.ToolDefinition {
 			Name: "run_command",
 			Description: "Run any shell command on the host (the agent runs on a dedicated machine with no restrictions), in the current working directory by default. " +
 				"It runs under sh with pipefail set where sh supports it, so a pipeline such as `make | tail` fails, and $? reports, when any command in it fails. " +
+				hostShellNote() +
+				"grep, rg, diff and cmp also exit 1 when they match nothing or find a difference, so a filter such as `| grep -v '^w:'` that leaves no lines fails the pipeline: " +
+				"to check a build's own status, redirect its output to a file instead of filtering it. " +
 				"stdout and stderr come back together, in the order the command wrote them. An output over 64KB is returned as its first 16KB and its last 48KB, " +
 				"and the whole output is saved to a file the result names, for read_file or grep. " +
 				"Set background for a command likely to take more than about 2 minutes, such as a full test suite, a benchmark or an emulator boot: " +
@@ -117,6 +121,32 @@ func (t *RunCommandTool) timeoutFor(in runCommandInput) time.Duration {
 	return timeout
 }
 
+// hostShellNote names the shell sh is on this host when it is not bash, whose syntax a model
+// tends to write: dash, for one, reads $'\t' as $\t, not a tab, and fails on [[ ]].
+var hostShellNote = sync.OnceValue(func() string {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		return ""
+	}
+	if target, err := filepath.EvalSymlinks(sh); err == nil {
+		sh = target
+	}
+	_, bashErr := exec.LookPath("bash")
+	return shellNote(filepath.Base(sh), bashErr == nil)
+})
+
+// shellNote is the description's sentence on a host whose sh is name, or "" for bash.
+func shellNote(name string, hasBash bool) string {
+	if name == "" || name == "bash" || name == "sh" {
+		return ""
+	}
+	note := "Here sh is " + name + ", which lacks bash-only syntax such as $'\\t', [[ ]], arrays and <(…)"
+	if hasBash {
+		return note + ": run bash -c '…' for those. "
+	}
+	return note + ". "
+}
+
 var (
 	pipefailMu      sync.Mutex
 	pipefailChecked bool
@@ -178,19 +208,62 @@ func newRunCommand(ctx context.Context, cmdStr, workdir, scratch string, timeout
 // and rg found no match, diff and cmp found a difference.
 var exitOneOnNoMatch = regexp.MustCompile(`(^|[\s;&|(])(grep|egrep|fgrep|rg|diff|cmp)(\s|$)`)
 
+// fdDup matches a redirection such as 2>&1, whose & does not end a command.
+var fdDup = regexp.MustCompile(`[0-9]*[<>]&[0-9-]+`)
+
+// feedsPipe reports whether the command that rest continues writes into a pipe: whether a |
+// that is not || comes before the command ends at ;, &, && or ||, a newline or rest's end.
+// Quoted text is skipped, so the | of grep -E 'a|b' is not taken for one.
+func feedsPipe(rest string) bool {
+	rest = fdDup.ReplaceAllString(rest, "")
+	for i := 0; i < len(rest); i++ {
+		switch c := rest[i]; c {
+		case '\'', '"':
+			end := strings.IndexByte(rest[i+1:], c)
+			if end < 0 {
+				return false
+			}
+			i += end + 1
+		case '\\':
+			i++
+		case ';', '&', '\n':
+			return false
+		case '|':
+			return i+1 == len(rest) || rest[i+1] != '|'
+		}
+	}
+	return false
+}
+
 // runCommandExitNotice describes a failed run of cmdStr, such as "[Exit code 2]".
 func runCommandExitNotice(cmdStr string, runErr error) string {
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		return "[Exit code 0, but " + heldOutputNote + "]"
+	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 		code := exitErr.ExitCode()
 		// Under pipefail, `grep -l "<failure" *.xml | head` that finds no failing test ends
 		// with grep's 1, which reads as the opposite of what it means.
 		if code == 1 && runErr.Error() == "exit status 1" {
-			if m := exitOneOnNoMatch.FindStringSubmatch(cmdStr); m != nil {
+			if ms := exitOneOnNoMatch.FindAllStringSubmatchIndex(cmdStr, -1); ms != nil {
+				m, piped := ms[0], false
+				for _, c := range ms {
+					if feedsPipe(cmdStr[c[1]:]) {
+						m, piped = c, true
+						break
+					}
+				}
+				name := cmdStr[m[4]:m[5]]
 				answer := "matches nothing"
-				if m[2] == "diff" || m[2] == "cmp" {
+				if name == "diff" || name == "cmp" {
 					answer = "finds a difference"
 				}
-				return fmt.Sprintf("[Exit code 1: the command runs %s, which also exits 1 when it %s, and pipefail passes that on]", m[2], answer)
+				// Without a pipe after it, its 1 is the command's own status, pipefail or not.
+				how := ""
+				if piped {
+					how = ", and pipefail passes that on"
+				}
+				return fmt.Sprintf("[Exit code 1: the command runs %s, which also exits 1 when it %s%s]", name, answer, how)
 			}
 		}
 		// Under pipefail, `seq 1 1000000 | head -1` ends with the status of seq, killed
@@ -207,6 +280,11 @@ func runCommandExitNotice(cmdStr string, runErr error) string {
 	}
 	return fmt.Sprintf("[%v]", runErr)
 }
+
+// heldOutputNote explains exec.ErrWaitDelay, which Wait reports only for a command that
+// exited 0: a process it left running, such as a server it started or the sleep of a subshell
+// it killed, kept the output pipe open, and hmj closed it a moment later.
+const heldOutputNote = "a process it left running (such as a server it started, or the sleep of a subshell it killed) still held its output open, so hmj stopped reading there"
 
 // inPlaceEdit finds sed or perl editing files in place (-i, -i.bak, -pi, --in-place).
 var inPlaceEdit = regexp.MustCompile(`(^|[\s;&|(])(sed|perl)(\s[^;&|\n]*?)?\s(-[a-zA-Z]*i\S*|--in-place\S*)`)
@@ -297,12 +375,15 @@ func startBackgroundJob(ctx context.Context, cmdStr, workdir string, timeoutSeco
 }
 
 // moveToBackground hands a running foreground command to the job registry when the user
-// presses Ctrl+B, and returns the call's result: the output so far and the job's number.
+// presses Ctrl+B, and returns the call's result: the output so far and the job's number. The
+// user pressed it to have the prompt back, so the turn ends with this call (see
+// WithBackgroundKey).
 func moveToBackground(ctx context.Context, p *shellProcess, cmdStr string, out *commandOutput, started time.Time) string {
 	var soFar string
 	j := Jobs.adopt(scratchDirFrom(ctx), cmdStr, p, started, time.Duration(MaxBackgroundJobSeconds)*time.Second, func() string {
 		soFar = out.finish()
 		return soFar
 	})
-	return withNotice(soFar, fmt.Sprintf("[moved to the background by the user as job %d after %s; the output so far is above, and %s. You will be told when it ends, with its exit code and last lines; the user can talk to you meanwhile. check_command reports on it or stops it.]", j.ID, formatElapsed(time.Since(started)), j.out.where()))
+	reportMovedToBackground(ctx, j.ID)
+	return withNotice(soFar, fmt.Sprintf("[moved to the background by the user as job %d after %s, which ended your turn; the output so far is above, and %s. You will be told when it ends, with its exit code and last lines. check_command reports on it or stops it.]", j.ID, formatElapsed(time.Since(started)), j.out.where()))
 }

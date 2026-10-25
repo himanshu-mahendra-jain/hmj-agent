@@ -269,3 +269,77 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 		t.Errorf("audit log missing the tool run: %v, %s", err, auditLog)
 	}
 }
+
+// A process killed outright mid-turn (out of memory, SIGKILL) has no chance to save, so the
+// turn saves as it goes: the prompt and every finished step are on disk while the next one runs.
+func TestProcessKilledMidTurnKeepsFinishedSteps(t *testing.T) {
+	dir := t.TempDir()
+	bin := buildCLI(t)
+
+	// Every reply asks for the same command: its first run answers at once, its second sleeps.
+	pidFile := filepath.Join(dir, "child.pid")
+	countFile := filepath.Join(dir, "runs")
+	command := "n=$(cat " + countFile + " 2>/dev/null || echo 0); echo $((n+1)) > " + countFile +
+		"; if [ $n -ge 1 ]; then echo $$ > " + pidFile + "; exec sleep 60; fi; echo first-step-finished"
+	args, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted, err := json.Marshal(string(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := mockAgentServer(t, []string{
+		`event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_run","name":"run_command","arguments":` + string(quoted) + `}}`,
+		`event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+	})
+	defer srv.Close()
+
+	cfgPath := filepath.Join(dir, "config.json")
+	cfg := `{"providers":{"p":{"baseUrl":"` + srv.URL + `","api":"responses","models":[{"id":"m"}]}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessions := filepath.Join(dir, "sessions")
+	cmd := exec.Command(bin)
+	cmd.Dir = dir
+	cmd.Env = append(cliEnv(), "HMJ_CONFIG="+cfgPath, "HMJ_SESSIONS="+sessions)
+	cmd.Stdin = strings.NewReader("run it twice\n")
+	cmd.Stdout = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	var childPID int
+	deadline := time.Now().Add(10 * time.Second)
+	for childPID == 0 {
+		if time.Now().After(deadline) {
+			cmd.Process.Kill()
+			t.Fatal("second step never started")
+		}
+		if data, err := os.ReadFile(pidFile); err == nil && strings.HasSuffix(string(data), "\n") {
+			if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &childPID); err != nil {
+				t.Fatalf("bad pid file %q: %v", data, err)
+			}
+		} else {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// A killed hmj cannot stop its tool's process group, so the test does.
+	defer syscall.Kill(-childPID, syscall.SIGKILL)
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+
+	data, err := os.ReadFile(conversationFile(sessions, "1"))
+	if err != nil {
+		t.Fatalf("conversation not saved during the turn: %v", err)
+	}
+	if !strings.Contains(string(data), "run it twice") || !strings.Contains(string(data), "first-step-finished") {
+		t.Errorf("saved conversation is missing the prompt or the finished step: %s", data)
+	}
+}

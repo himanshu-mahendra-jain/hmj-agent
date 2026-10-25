@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -23,7 +24,12 @@ type completionsRequest struct {
 	Tools         []completionsTool        `json:"tools,omitempty"`
 	StreamOptions *completionsStreamOption `json:"stream_options,omitempty"`
 	// MaxTokens caps the generated tokens; it is sent only when the model sets maxOutputTokens.
-	MaxTokens int `json:"max_tokens,omitzero"`
+	// OpenAI's own API gets MaxCompletionTokens instead: it deprecates max_tokens, and its
+	// reasoning models refuse it. Compatible servers all take max_tokens.
+	MaxTokens           int `json:"max_tokens,omitzero"`
+	MaxCompletionTokens int `json:"max_completion_tokens,omitzero"`
+	// ReasoningEffort is the model's effort, sent when it sets one and thinking is not off.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type completionsStreamOption struct {
@@ -46,6 +52,11 @@ type completionsTool struct {
 type completionsChunk struct {
 	Choices []completionsChoice `json:"choices"`
 	Usage   *TokenUsage         `json:"usage"`
+	// Error is how compatible servers (vLLM, OpenRouter and others) report a failure after the
+	// stream has started.
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 type completionsChoice struct {
@@ -148,6 +159,12 @@ func (a *completionsAccumulator) handle(data string, onReasoning, onDelta func(s
 		return fmt.Errorf("chat completions stream: invalid chunk JSON: %w (snippet: %s)", err, snippet)
 	}
 
+	if chunk.Error != nil {
+		if chunk.Error.Message == "" {
+			return fmt.Errorf("chat completions stream error: %s", truncateErrorBody([]byte(trimmed), maxShownErrorRunes))
+		}
+		return fmt.Errorf("chat completions stream error: %s", chunk.Error.Message)
+	}
 	if chunk.Usage != nil {
 		a.usage = chunk.Usage
 	}
@@ -275,6 +292,16 @@ func (a *completionsAccumulator) result() (Message, *TokenUsage) {
 	}, usage
 }
 
+// isOpenAIHost reports whether baseURL is OpenAI's own API, or Azure OpenAI, which follows it.
+func isOpenAIHost(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com")
+}
+
 // streamCompletionsOnce executes one streaming request against the OpenAI Chat
 // Completions API (POST /chat/completions).
 func (c *Client) streamCompletionsOnce(
@@ -291,7 +318,14 @@ func (c *Client) streamCompletionsOnce(
 		Messages:      convertMessagesToCompletions(messages),
 		Stream:        true,
 		StreamOptions: &completionsStreamOption{IncludeUsage: true},
-		MaxTokens:     model.MaxOutputTokens,
+	}
+	if isOpenAIHost(provider.BaseURL) {
+		reqPayload.MaxCompletionTokens = model.MaxOutputTokens
+	} else {
+		reqPayload.MaxTokens = model.MaxOutputTokens
+	}
+	if model.ThinkingEnabled() {
+		reqPayload.ReasoningEffort = model.Effort
 	}
 	if len(tools) > 0 {
 		reqPayload.Tools = make([]completionsTool, 0, len(tools))
@@ -309,14 +343,14 @@ func (c *Client) streamCompletionsOnce(
 	}
 
 	baseURL := strings.TrimRight(provider.BaseURL, "/")
-	var url string
+	var endpoint string
 	if strings.HasSuffix(baseURL, "/chat/completions") || strings.HasSuffix(baseURL, "/completions") {
-		url = baseURL
+		endpoint = baseURL
 	} else {
-		url = baseURL + "/chat/completions"
+		endpoint = baseURL + "/chat/completions"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return Message{}, nil, 0, false, err
 	}

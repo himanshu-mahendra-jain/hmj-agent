@@ -32,6 +32,14 @@ func TestAccessibleScreensAreAppendOnly(t *testing.T) {
 	s := e.Start("--accessible")
 	s.ExpectPrompt()
 
+	// Renamed, so /new keeps it rather than removing it unused; deleting it then leaves the
+	// picker open.
+	s.Type("/resume\r")
+	s.Expect("r <n> <new name> renames")
+	s.Type("r 1 keep\r")
+	s.Expect("keep")
+	s.Type("q\r")
+	s.ExpectPrompt()
 	s.Type("/new\r")
 	s.Expect("created conversation")
 	s.ExpectPrompt()
@@ -40,7 +48,7 @@ func TestAccessibleScreensAreAppendOnly(t *testing.T) {
 	s.Type("d 1\r")
 	s.Expect("type y to confirm:")
 	s.Type("y\r")
-	s.Expect("deleted ")
+	s.Expect("deleted [1] keep")
 	s.Type("q\r")
 	s.ExpectPrompt()
 

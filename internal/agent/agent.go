@@ -32,6 +32,10 @@ type Runner struct {
 	// progressEvery is how often accessibility mode reports a running tool; zero is the
 	// terminal's default.
 	progressEvery time.Duration
+	// Checkpoint, when set, saves the conversation during a turn, where it can be sent again
+	// as it stands: once the user's message is added and after each step's tool results. A
+	// process killed mid-turn (out of memory, SIGKILL) then loses at most the step under way.
+	Checkpoint func()
 }
 
 func NewRunner(client *chat.Client, cfg config.Config) *Runner {
@@ -91,16 +95,18 @@ func NewRunnerWithTools(client *chat.Client, cfg config.Config, toolList []tools
 //
 // Background jobs of conv that ended since the model last heard go first in the user's message:
 // with input, or alone when input is empty, as when one woke the idle prompt. With neither
-// there is no turn.
+// there is no turn. So do jobs whose end the model never heard of because hmj stopped first.
 func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input string) error {
-	notices := tools.Jobs.TakeFinished(conv.ScratchDir)
+	notices := append(tools.Jobs.LostNotices(conv.ScratchDir, conv.Messages), tools.Jobs.TakeFinished(conv.ScratchDir)...)
 	if input == "" && len(notices) == 0 {
 		return nil
 	}
 	// Ctrl+B moves a running command to the background; a press while none runs is dropped
 	// before the next tool starts.
 	backgroundKeys := make(chan struct{}, 1)
-	runCtx, cancel := context.WithCancel(tools.WithBackgroundKey(tools.WithScratchDir(ctx, conv.ScratchDir), (<-chan struct{})(backgroundKeys)))
+	var movedJob atomic.Int64 // the job a Ctrl+B made of the running command, which ends the turn
+	runCtx, cancel := context.WithCancel(tools.WithBackgroundKey(tools.WithScratchDir(ctx, conv.ScratchDir), (<-chan struct{})(backgroundKeys),
+		func(job int) { movedJob.Store(int64(job)) }))
 	defer cancel()
 
 	// Immediate feedback that the prompt was accepted: a quiet spinner keeps
@@ -126,6 +132,7 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 	defer stopHaltListener()
 
 	r.beginTurn(conv, withJobNotices(notices, input))
+	r.checkpoint(conv)
 
 	// Every block the turn prints brings the blank line before it, so nothing is printed here
 	// that a tool call's own blank line would double.
@@ -247,7 +254,25 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 				Content:    output,
 				Images:     images,
 			})
+			// The user pressed Ctrl+B to have the prompt back, so the turn ends here, as a halt
+			// does; the model hears of the job with the next message or when it ends.
+			if job := movedJob.Swap(0); job != 0 {
+				appendCancelledToolResults(conv, assistantMsg.ToolCalls[i+1:])
+				spinner.Stop()
+				fmt.Printf("\n%s\n", theme.Info(fmt.Sprintf("[job %d runs in the background; the model hears of it with your next message, or when it ends]", job)))
+				endTurn()
+				return nil
+			}
 		}
+		r.checkpoint(conv)
+	}
+}
+
+// checkpoint marks conv as changed and calls r.Checkpoint, if set.
+func (r *Runner) checkpoint(conv *session.Conversation) {
+	if r.Checkpoint != nil {
+		conv.UpdatedAt = time.Now()
+		r.Checkpoint()
 	}
 }
 
