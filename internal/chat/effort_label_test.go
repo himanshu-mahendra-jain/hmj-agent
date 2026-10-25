@@ -20,7 +20,11 @@ func TestEffortLabel(t *testing.T) {
 		{config.APIGemini, "", "xhigh", "", "high (from xhigh)"},
 		{config.APIGemini, "", "max", "", "high (from max)"},
 		{config.APIGemini, "", "high", "off", "default (high not sent: thinking off)"},
-		{config.APICompletions, "", "high", "", "default (high not sent: Chat Completions)"},
+		{config.APICompletions, "", "high", "", "high"},
+		{config.APICompletions, "", "high", "off", "default (high not sent: thinking off)"},
+		{config.APIAnthropic, "", "minimal", "", "low (from minimal)"},
+		{config.APIGemini, "", "none", "", "minimal (from none)"},
+		{config.APIResponses, "", "none", "", "none"},
 		{config.APICompletions, "", "", "", "default"},
 		{"", "https://api.anthropic.com", "high", "", "high"},       // inferred from the URL
 		{"", "http://localhost:8080/v1", "medium", "off", "medium"}, // found by probing: as configured

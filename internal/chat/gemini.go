@@ -56,6 +56,8 @@ func geminiThinkingLevel(effort string) string {
 		return ""
 	case "low", "medium":
 		return effort
+	case "none", "minimal":
+		return "minimal"
 	default:
 		return "high"
 	}

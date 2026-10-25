@@ -153,8 +153,9 @@ type Model struct {
 	// MaxOutputTokens caps the tokens the model may generate per response. Unset, Anthropic uses
 	// its default of 64000 and the other protocols send no limit.
 	MaxOutputTokens int `json:"maxOutputTokens,omitzero"`
-	// Effort sets how much reasoning the model spends: low, medium, high, xhigh or max. Unset
-	// means the provider default.
+	// Effort sets how much reasoning the model spends: none, minimal, low, medium, high, xhigh or
+	// max, OpenAI's levels; other providers get the nearest level they take. Unset means the
+	// provider default.
 	Effort string `json:"effort,omitempty"`
 	// Thinking controls reasoning. "" or "adaptive" (the default) requests reasoning from the
 	// provider and keeps it in the transcript; "off" sends no reasoning parameters, for models or
@@ -289,7 +290,7 @@ func LoadConfig(path string) (Config, error) {
 }
 
 // validEfforts are the reasoning effort levels a model may set.
-var validEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+var validEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // validThinking are the values a model's thinking option may take.
 var validThinking = []string{"", "adaptive", "off"}

@@ -31,7 +31,7 @@ func TestSummarizeToolResult(t *testing.T) {
 		{"read_file", `{}`, "  40 | x\n  41 | y", false, "lines 40-41"},
 		{"read_file", `{}`, "   1 | a\n--- truncated: showing lines 1-2000 of 5120; call read_file again with offset=2001 ---", false, "lines 1-2000 of 5120"},
 		{"read_file", `{}`, "   1 | a\n--- truncated: line 1 is longer than 262144 bytes and was cut ---", false, "1 line"},
-		{"read_file", `{}`, "app.apk is not a text file: Android APK (ZIP archive), 30.0 MB. read_file shows only text; list its files with run_command: unzip -l app.apk", false, "Android APK (ZIP archive), 30.0 MB. read_file shows only text; list its files with run_command: unzip -l app.apk"},
+		{"read_file", `{}`, "app.apk is not a text file: Android APK (ZIP archive), 30.0 MB. read_file shows only text and pictures; list its files with run_command: unzip -l app.apk", false, "Android APK (ZIP archive), 30.0 MB. read_file shows only text and pictures; list its files with run_command: unzip -l app.apk"},
 		{"read_file", `{}`, "shots/a.png: PNG image, 1080×2400, 72 KB; shown scaled to 900×2000 as PNG (1.1 MB).", true, "image PNG image, 1080×2400, 72 KB; shown scaled to 900×2000 as PNG (1.1 MB)"},
 		{"list_files", `{}`, "a.go\nb.go", false, "2 files"},
 		{"list_files", `{}`, "cmd/\ncmd/main.go\ninternal/\ngo.mod", false, "2 files, 2 directories"},

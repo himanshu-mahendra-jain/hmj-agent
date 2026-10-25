@@ -51,6 +51,11 @@ func TestReadFileDescribesBinaryFiles(t *testing.T) {
 		{"notes.txt", []byte("\xff\xfeh\x00i\x00"), []string{"UTF-16 text (little-endian)", "iconv -f UTF-16"}},
 		{"blob.dat", random, []string{"binary file, 4 KB", "xxd "}},
 		{"it's here.bin", []byte("\x00\x01"), []string{`xxd 'it'\''s here.bin' | head -40`}},
+		{"fold.png", append([]byte("[Warning] Multiple displays were found, but no display id was specified!\n\x00"), pngBytes(t, 4, 4)...), []string{
+			`Its .png name says PNG image, but it starts with "[Warning] Multiple displays were found, …".`,
+			"The PNG image starts at byte 74", "tail -c +75 fold.png > fold.fixed.png",
+		}},
+		{"noise.jpg", []byte("oops\x00\x01\x02"), []string{`Its .jpg name says JPEG image, but it starts with "oops".`, "read_file shows only text and pictures; ", "xxd "}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Chdir(dir)

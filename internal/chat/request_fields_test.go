@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"fmt"
@@ -58,6 +59,35 @@ func TestResponsesRequestReasoningFields(t *testing.T) {
 	}
 }
 
+// TestResponsesToolsAreFlat checks that a Responses API request gives each function tool its
+// name, description and parameters beside its type, as the API requires (a tool nested under
+// "function", the Chat Completions shape, is refused with "Missing required parameter:
+// 'tools[0].name'"), and keeps the tools non-strict.
+func TestResponsesToolsAreFlat(t *testing.T) {
+	url, body := capturedBody(t, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	cfg := config.Config{Providers: map[string]config.Provider{"p": {BaseURL: url, API: "responses", Models: []config.Model{{ID: "m"}}}}}
+	tools := []ToolDefinition{{Type: "function", Function: FunctionDefinition{Name: "read_file", Description: "Reads a file.", Parameters: Schema{"type": "object"}}}}
+	if _, _, err := NewClient(cfg).StreamChat(context.Background(), config.ModelRef{Provider: "p", Model: "m"}, nil, tools, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var req struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(*body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Tools) != 1 {
+		t.Fatalf("tools = %v, want one", req.Tools)
+	}
+	tool := req.Tools[0]
+	if tool["type"] != "function" || tool["name"] != "read_file" || tool["description"] != "Reads a file." || tool["strict"] != false || tool["parameters"] == nil {
+		t.Errorf("tool = %v, want type, name, description, parameters and strict false at the top level", tool)
+	}
+	if _, nested := tool["function"]; nested {
+		t.Errorf("tool = %v, must not nest its fields under function", tool)
+	}
+}
+
 // TestResponsesReasoningRoundTrip checks that a streamed reasoning item (with its summary and
 // encrypted content) is kept and replayed before the function_call items of the same turn.
 func TestResponsesReasoningRoundTrip(t *testing.T) {
@@ -111,6 +141,53 @@ data: {"type":"response.completed","response":{"status":"completed"}}
 	}
 }
 
+// TestResponsesMessagePhasesRoundTrip checks that message items the model labelled with a phase
+// are kept with it and sent back as separate items, phase and all, while the message's Content
+// holds all its text; a reply without phases goes back as one message, as before.
+func TestResponsesMessagePhasesRoundTrip(t *testing.T) {
+	sse := `event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"Reading the file."}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Reading the file."}]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file"}}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{}"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed"}}
+
+`
+	url, _ := capturedBody(t, sse)
+	cfg := config.Config{Providers: map[string]config.Provider{"p": {BaseURL: url, API: "responses", Models: []config.Model{{ID: "m"}}}}}
+	msg, _, err := NewClient(cfg).StreamChat(context.Background(), config.ModelRef{Provider: "p", Model: "m"}, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Content != "Reading the file." {
+		t.Errorf("content = %q", msg.Content)
+	}
+	items := convertMessagesToInputItems([]Message{msg})
+	if len(items) != 2 || items[0].Type != "message" || items[0].Phase != "commentary" || items[0].Content != "Reading the file." || items[1].Type != "function_call" {
+		t.Fatalf("replayed items = %+v, want the commentary message then the call", items)
+	}
+	raw, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"phase":"commentary"`) {
+		t.Errorf("message item = %s, want its phase", raw)
+	}
+
+	plain := convertMessagesToInputItems([]Message{{Role: "assistant", Content: "Done."}})
+	if len(plain) != 1 || plain[0].Content != "Done." || plain[0].Phase != "" {
+		t.Errorf("unlabelled reply = %+v, want one message without a phase", plain)
+	}
+}
+
 // TestCompletionsRequestMaxTokens checks that max_tokens is sent only when the model sets it.
 func TestCompletionsRequestMaxTokens(t *testing.T) {
 	url, body := capturedBody(t, "data: [DONE]\n\n")
@@ -132,6 +209,42 @@ func TestCompletionsRequestMaxTokens(t *testing.T) {
 	}
 }
 
+// TestCompletionsRequestReasoningEffort checks that a Chat Completions request sends the model's
+// effort as reasoning_effort, and not when thinking is off or no effort is set.
+func TestCompletionsRequestReasoningEffort(t *testing.T) {
+	for _, tc := range []struct {
+		model config.Model
+		want  string
+	}{
+		{config.Model{ID: "m", Effort: "minimal"}, `"reasoning_effort":"minimal"`},
+		{config.Model{ID: "m", Effort: "high", Thinking: "off"}, ""},
+		{config.Model{ID: "m"}, ""},
+	} {
+		url, body := capturedBody(t, "data: [DONE]\n\n")
+		cfg := config.Config{Providers: map[string]config.Provider{"p": {BaseURL: url, API: "completions", Models: []config.Model{tc.model}}}}
+		if _, _, err := NewClient(cfg).StreamChat(context.Background(), config.ModelRef{Provider: "p", Model: "m"}, nil, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if tc.want == "" && strings.Contains(*body, "reasoning_effort") || tc.want != "" && !strings.Contains(*body, tc.want) {
+			t.Errorf("effort %q thinking %q: request = %s, want %q", tc.model.Effort, tc.model.Thinking, *body, cmp.Or(tc.want, "no reasoning_effort"))
+		}
+	}
+}
+
+// TestAnthropicEffortMapsOpenAILevels checks that OpenAI's none and minimal go to Anthropic as
+// low, and its own levels as they are.
+func TestAnthropicEffortMapsOpenAILevels(t *testing.T) {
+	for effort, want := range map[string]string{"none": "low", "minimal": "low", "low": "low", "max": "max"} {
+		raw, err := json.Marshal(anthropicRequestFor(config.Model{ID: "m", Effort: effort}, nil, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"output_config":{"effort":"`+want+`"}`) {
+			t.Errorf("effort %s: request = %s, want %s", effort, raw, want)
+		}
+	}
+}
+
 // TestGeminiGenerationConfig checks the output limit, thought summaries and thinking level of the
 // Interactions generation_config.
 func TestGeminiGenerationConfig(t *testing.T) {
@@ -144,6 +257,7 @@ func TestGeminiGenerationConfig(t *testing.T) {
 		{"low effort", config.Model{ID: "m", Effort: "low", MaxOutputTokens: 500}, `"generation_config":{"max_output_tokens":500,"thinking_level":"low","thinking_summaries":"auto"}`, ""},
 		{"medium effort", config.Model{ID: "m", Effort: "medium"}, `"generation_config":{"thinking_level":"medium","thinking_summaries":"auto"}`, "max_output_tokens"},
 		{"other effort maps to high", config.Model{ID: "m", Effort: "max"}, `"generation_config":{"thinking_level":"high","thinking_summaries":"auto"}`, "max_output_tokens"},
+		{"none maps to minimal", config.Model{ID: "m", Effort: "none"}, `"generation_config":{"thinking_level":"minimal","thinking_summaries":"auto"}`, ""},
 		{"unset", config.Model{ID: "m"}, `"generation_config":{"thinking_summaries":"auto"}`, "thinking_level"},
 	}
 	for _, tc := range tests {
@@ -202,7 +316,10 @@ func TestThinkingOffOmitsReasoningFields(t *testing.T) {
 			}
 		}
 		off := send("off")
-		for _, unwanted := range []string{`"store"`, `"include"`, `"reasoning"`, `"encrypted_content"`} {
+		if !strings.Contains(off, `"store":false`) {
+			t.Errorf("thinking off: request must still not be stored: %s", off)
+		}
+		for _, unwanted := range []string{`"include"`, `"reasoning"`, `"encrypted_content"`} {
 			if strings.Contains(off, unwanted) {
 				t.Errorf("thinking off: request must not contain %s: %s", unwanted, off)
 			}

@@ -178,7 +178,7 @@ func TestHandleModelsShowsEffort(t *testing.T) {
 	useAccessibility(t)
 	cfg := config.Config{Providers: map[string]config.Provider{
 		"claude": {BaseURL: "http://127.0.0.1:1", API: config.APIAnthropic, Models: []config.Model{{ID: "opus", Effort: "high"}}},
-		"local":  {BaseURL: "http://127.0.0.1:1", API: config.APICompletions, Models: []config.Model{{ID: "qwen", Effort: "low"}}},
+		"local":  {BaseURL: "http://127.0.0.1:1", API: config.APICompletions, Models: []config.Model{{ID: "qwen", Effort: "low", Thinking: "off"}}},
 	}}
 	sm := session.LoadSessionManager("", config.ModelRef{Provider: "claude", Model: "opus"})
 	out := captureOutput(t, func() {
@@ -186,7 +186,7 @@ func TestHandleModelsShowsEffort(t *testing.T) {
 			t.Fatalf("HandleModels: %v", err)
 		}
 	})
-	for _, want := range []string{"claude/opus | effort: high", "local/qwen | effort: default (low not sent: Chat Completions)"} {
+	for _, want := range []string{"claude/opus | effort: high", "local/qwen | effort: default (low not sent: thinking off)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("/models list lacks %q:\n%s", want, out)
 		}

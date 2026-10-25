@@ -136,6 +136,9 @@ type session struct {
 	cursor int    // Expect searches the stripped screen from here on
 
 	timeout time.Duration // how long Expect and Wait wait; expectTimeout unless changed
+	// accessible is set when hmj was started with --accessible, whose prompt reads whole lines
+	// in canonical mode.
+	accessible bool
 
 	rows, cols int            // terminal size at start
 	resizes    []screenResize // later size changes, replayed by ScreenState
@@ -182,7 +185,8 @@ func (e *env) StartWithEnv(extra []string, args ...string) *session {
 	}
 	slave.Close() // the child holds its own copy; reads on master end when it exits
 
-	s := &session{t: t, cmd: cmd, master: master, timeout: expectTimeout, rows: e.Rows, cols: e.Cols, readDone: make(chan struct{}), exited: make(chan struct{})}
+	s := &session{t: t, cmd: cmd, master: master, timeout: expectTimeout, rows: e.Rows, cols: e.Cols, readDone: make(chan struct{}), exited: make(chan struct{}),
+		accessible: slices.Contains(args, "--accessible") || slices.Contains(args, "-a")}
 	go func() {
 		defer close(s.readDone)
 		chunk := make([]byte, 8192)
@@ -351,6 +355,31 @@ func (s *session) Since() string {
 func (s *session) ExpectPrompt() {
 	s.t.Helper()
 	s.ExpectRegexp(`\[model: [^\]]+\]\n> `)
+	if !s.accessible {
+		s.waitForRawMode()
+	}
+}
+
+// waitForRawMode waits until the prompt reads keys one by one. hmj prints the prompt just
+// before it leaves canonical mode, and a key typed in between goes to the kernel's line
+// editor, which takes Ctrl+R (reprint) and Ctrl+W (erase word) for itself. On Linux, the
+// master side of a PTY reports the terminal settings of its slave.
+func (s *session) waitForRawMode() {
+	s.t.Helper()
+	deadline := time.Now().Add(s.timeout)
+	for {
+		tio, err := unix.IoctlGetTermios(int(s.master.Fd()), unix.TCGETS)
+		if err != nil {
+			s.t.Fatalf("reading the PTY's terminal settings: %v", err)
+		}
+		if tio.Lflag&unix.ICANON == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			s.t.Fatalf("the prompt did not leave canonical mode within %v", s.timeout)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // Quit presses Ctrl+D and requires a clean exit.

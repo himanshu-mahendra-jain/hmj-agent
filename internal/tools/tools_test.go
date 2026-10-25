@@ -8,9 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -402,15 +403,24 @@ func TestComprehensiveWebSearchEndpointsAndDDG(t *testing.T) {
 func TestParentContextCancellationSubprocess(t *testing.T) {
 	tool := &tools.RunCommandTool{}
 	ctx, cancel := context.WithCancel(context.Background())
+	pidFile := filepath.Join(t.TempDir(), "sleep.pid")
 
 	done := make(chan string, 1)
 	go func() {
-		out, _ := tool.Execute(ctx, `{"command": "sleep 10"}`)
+		out, _ := tool.Execute(ctx, `{"command": "echo $$ > `+pidFile+`; exec sleep 10"}`)
 		done <- out
 	}()
 
 	// Allow process to spawn
-	time.Sleep(50 * time.Millisecond)
+	var pid int
+	for deadline := time.Now().Add(5 * time.Second); pid == 0 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if data, err := os.ReadFile(pidFile); err == nil && strings.HasSuffix(string(data), "\n") {
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+	}
+	if pid == 0 {
+		t.Fatal("the command never wrote its pid")
+	}
 
 	// Cancel the parent context
 	cancel()
@@ -424,10 +434,11 @@ func TestParentContextCancellationSubprocess(t *testing.T) {
 		t.Fatal("subprocess failed to terminate within 2s after parent context was cancelled")
 	}
 
-	// Verify no orphaned sleep 10 process is still lingering
-	checkCmd := exec.Command("pgrep", "-f", "sleep 10")
-	if out, err := checkCmd.Output(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
-		t.Errorf("orphaned sleep process found lingering: %s", string(out))
+	// Verify its sleep is gone, not lingering as an orphan. Only this command's process is
+	// checked: another program's "sleep 10" on the machine is none of the test's business.
+	if err := syscall.Kill(pid, 0); err == nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		t.Errorf("orphaned sleep process found lingering: %d", pid)
 	}
 }
 

@@ -35,7 +35,7 @@ func TestToolPropertiesGoOutInTheirOrder(t *testing.T) {
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 			func(tool jsontext.Value) jsontext.Value { return member(t, tool, "input_schema") }},
 		{config.APIResponses, "", "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
-			func(tool jsontext.Value) jsontext.Value { return member(t, member(t, tool, "function"), "parameters") }},
+			func(tool jsontext.Value) jsontext.Value { return member(t, tool, "parameters") }},
 		{config.APICompletions, "", "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
 			func(tool jsontext.Value) jsontext.Value { return member(t, member(t, tool, "function"), "parameters") }},
 		{config.APIGemini, "/v1beta", "data: {\"event_type\":\"interaction.completed\",\"interaction\":{\"status\":\"completed\"}}\n\n",

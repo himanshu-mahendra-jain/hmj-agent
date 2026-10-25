@@ -194,6 +194,36 @@ func writeFileAtomic(path string, data []byte) error {
 	return nil
 }
 
+// staleTempAge is how old a temporary file of writeFileAtomic must be to count as left behind
+// by a process that ended in the middle of a write; a write in progress takes far less.
+const staleTempAge = time.Minute
+
+// pruneTempFiles removes the temporary files writeFileAtomic leaves when the process ends between
+// creating and renaming one, as a kill or a second signal during shutdown can make it, from the
+// session directory and its conversations. One newer than staleTempAge may be another hmj's
+// write in progress, so it is kept.
+func (sm *SessionManager) pruneTempFiles() {
+	now := time.Now()
+	for _, dir := range []string{sm.dir, sm.conversationsDir()} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if !e.Type().IsRegular() || !strings.HasPrefix(name, ".") || !strings.Contains(name, ".json.tmp") {
+				continue
+			}
+			if info, err := e.Info(); err != nil || now.Sub(info.ModTime()) < staleTempAge {
+				continue
+			}
+			if err := removeTemp(filepath.Join(dir, name)); err != nil {
+				logging.L().Warn("temporary file not removed", "error", err.Error())
+			}
+		}
+	}
+}
+
 // removeTemp deletes a failed write's temporary file. A file that is already gone is not an
 // error; anything else is reported alongside the write failure.
 func removeTemp(path string) error {

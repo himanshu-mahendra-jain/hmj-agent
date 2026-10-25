@@ -181,9 +181,9 @@ func TestWrapCellCJKRespectsWidth(t *testing.T) {
 func TestWrapCellKeepsStyleAcrossLines(t *testing.T) {
 	got := wrapCell("**bold words here** and `x*y`", 10)
 	want := []cellLine{
-		{{"bold", styleBold}, {" ", stylePlain}, {"words", styleBold}},
-		{{"here", styleBold}, {" ", stylePlain}, {"and", stylePlain}},
-		{{"x*y", styleCode}},
+		{{"bold", styleBold, ""}, {" ", stylePlain, ""}, {"words", styleBold, ""}},
+		{{"here", styleBold, ""}, {" ", stylePlain, ""}, {"and", stylePlain, ""}},
+		{{"x*y", styleCode, ""}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("wrapCell = %#v, want %#v", got, want)
@@ -193,8 +193,8 @@ func TestWrapCellKeepsStyleAcrossLines(t *testing.T) {
 // TestSplitCellWordKeepsStyles checks that a word wider than its column is cut by display
 // width across spans of different styles.
 func TestSplitCellWordKeepsStyles(t *testing.T) {
-	got, lastW := splitCellWord(cellLine{{"abc", styleBold}, {"de", stylePlain}}, 2)
-	want := []cellLine{{{"ab", styleBold}}, {{"c", styleBold}, {"d", stylePlain}}, {{"e", stylePlain}}}
+	got, lastW := splitCellWord(cellLine{{"abc", styleBold, ""}, {"de", stylePlain, ""}}, 2)
+	want := []cellLine{{{"ab", styleBold, ""}}, {{"c", styleBold, ""}, {"d", stylePlain, ""}}, {{"e", stylePlain, ""}}}
 	if !reflect.DeepEqual(got, want) || lastW != 1 {
 		t.Errorf("splitCellWord = %#v, %d; want %#v, 1", got, lastW, want)
 	}

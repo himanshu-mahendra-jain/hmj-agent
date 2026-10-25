@@ -61,7 +61,7 @@ func TestTwoManagersShareASessionDirectory(t *testing.T) {
 }
 
 // TestNewConversationsGetDistinctIDs checks that conversations two managers create in turn never
-// share an ID.
+// share an ID, and that each has its file.
 func TestNewConversationsGetDistinctIDs(t *testing.T) {
 	dir := t.TempDir()
 	a, b := LoadSessionManager(dir, testModel), LoadSessionManager(dir, testModel)
@@ -71,6 +71,8 @@ func TestNewConversationsGetDistinctIDs(t *testing.T) {
 		if i%2 == 1 {
 			sm = b
 		}
+		// A conversation left unused is removed, so each gets a prompt first
+		say(sm.Active(), "hi")
 		ids = append(ids, sm.New("").ID)
 	}
 	slices.Sort(ids)
@@ -209,7 +211,8 @@ func TestSecondManagerStartsWithTheStickyModel(t *testing.T) {
 func TestDeletedIDsAreNotReused(t *testing.T) {
 	dir := t.TempDir()
 	sm := LoadSessionManager(dir, testModel) // 1
-	sm.New("")                               // 2
+	say(sm.Active(), "hi")
+	say(sm.New(""), "hi") // 2; used, so leaving them keeps them
 	third := sm.New("")
 	if err := sm.Delete(third.ID); err != nil {
 		t.Fatal(err)
@@ -263,5 +266,64 @@ func TestSaveDoesNotOverwriteAnotherManagersConversation(t *testing.T) {
 	}
 	if got := saved(t, dir, b.ActiveID); !slices.Equal(got, []string{"b's turn"}) {
 		t.Errorf("the file holds %q, want b's conversation untouched", got)
+	}
+}
+
+// TestUnusedConversationIsRemovedWhenLeft checks that a conversation left with /new or /resume
+// before any prompt was sent in it is removed, files and all, and its ID not given out again;
+// that one renamed, or used, is kept; and that the one open when hmj quits is kept, since the
+// next start opens it again.
+func TestUnusedConversationIsRemovedWhenLeft(t *testing.T) {
+	dir := t.TempDir()
+	sm := LoadSessionManager(dir, testModel)
+	exists := func(id string) bool {
+		_, err := os.Stat(filepath.Join(dir, "conversations", id+".json"))
+		return err == nil
+	}
+	unused := sm.ActiveID
+	if !exists(unused) {
+		t.Fatalf("conversation %s has no file to start with", unused)
+	}
+	scratch := sm.Active().ScratchDir
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed := sm.New("").ID
+	if exists(unused) || sm.Conversations[unused] != nil || renamed == unused {
+		t.Errorf("unused conversation %s was kept, or its ID given out again (%s)", unused, renamed)
+	}
+	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("its scratch directory was kept: %v", err)
+	}
+	if err := sm.Rename(renamed, "plans"); err != nil {
+		t.Fatal(err)
+	}
+	used := sm.New("").ID
+	say(sm.Active(), "hi")
+	if _, err := sm.Resume(renamed); err != nil {
+		t.Fatal(err)
+	}
+	last := sm.New("").ID
+	for _, id := range []string{renamed, used} {
+		if !exists(id) {
+			t.Errorf("conversation %s was removed", id)
+		}
+	}
+	if slices.Contains([]string{unused, renamed, used}, last) {
+		t.Errorf("ID %s given out again", last)
+	}
+
+	if err := sm.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(last) {
+		t.Errorf("the unused conversation open at exit, %s, was removed", last)
+	}
+	if again := LoadSessionManager(dir, testModel); again.ActiveID != last {
+		t.Errorf("the next start opened %s, want %s", again.ActiveID, last)
 	}
 }

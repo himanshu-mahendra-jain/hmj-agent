@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"hmj-agent/internal/config"
 )
@@ -344,5 +345,45 @@ func TestCurrentSystemPromptInDeletedWorkingDirectory(t *testing.T) {
 	}
 	if got := CurrentSystemPrompt(); got != DefaultSystemPrompt {
 		t.Errorf("prompt = %q, want the default", got[min(len(got), len(DefaultSystemPrompt)):])
+	}
+}
+
+// TestLoadRemovesTempFilesLeftByAnEndedWrite checks that loading the session directory removes
+// the temporary files of a write the process never finished, in the directory and among the
+// conversations, and keeps a recent one, which may be another hmj's write in progress, and the
+// files that are not temporary.
+func TestLoadRemovesTempFilesLeftByAnEndedWrite(t *testing.T) {
+	dir := writeSessionDir(t, "", map[string]string{"7": `{"id":"7","name":"kept","messages":[]}`})
+	convs := filepath.Join(dir, "conversations")
+	old := time.Now().Add(-2 * staleTempAge)
+	write := func(path string, stale bool) {
+		t.Helper()
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if stale {
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	stale := []string{filepath.Join(convs, ".7.json.tmp615728583"), filepath.Join(dir, ".state.json.tmp42")}
+	kept := []string{filepath.Join(convs, ".8.json.tmp1"), filepath.Join(convs, ".notes"), filepath.Join(convs, "7.json")}
+	for _, p := range stale {
+		write(p, true)
+	}
+	write(kept[0], false)
+	write(kept[1], true)
+
+	LoadSessionManager(dir, testModel)
+	for _, p := range stale {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s left behind: %v", filepath.Base(p), err)
+		}
+	}
+	for _, p := range kept {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s removed: %v", filepath.Base(p), err)
+		}
 	}
 }

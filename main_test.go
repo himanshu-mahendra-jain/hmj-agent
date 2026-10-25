@@ -796,3 +796,38 @@ func TestSecondSignalExitsAtOnce(t *testing.T) {
 		t.Errorf("shutdown ran to its grace timeout before the second signal ended it:\n%s", stderr.String())
 	}
 }
+
+// signalDuringExitHelperEnv makes the test binary act as the process
+// TestSignalDuringExitWaitsForIt signals, since the exit it checks ends the process.
+const signalDuringExitHelperEnv = "HMJ_SIGNAL_DURING_EXIT_HELPER"
+
+// TestSignalDuringExitWaitsForIt checks that a signal arriving while hmj quits waits for that
+// exit instead of saving the session again: the quit's own exit ended the process during the
+// second save, which left the conversation's temporary file behind.
+func TestSignalDuringExitWaitsForIt(t *testing.T) {
+	if os.Getenv(signalDuringExitHelperEnv) == "1" {
+		ctx, cancel := context.WithCancel(context.Background())
+		dir, err := os.MkdirTemp("", "hmj-exit-")
+		if err != nil {
+			os.Exit(3)
+		}
+		a := &app{ctx: ctx, cancel: cancel, busy: make(chan struct{}, 1), sm: session.LoadSessionManager(dir, config.ModelRef{Provider: "p", Model: "m"})}
+		a.installSignalHandler()
+		a.exiting.Lock() // the normal exit has begun its final save
+		if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+			os.Exit(3)
+		}
+		<-ctx.Done() // shutdown has begun
+		time.Sleep(300 * time.Millisecond)
+		os.RemoveAll(dir)
+		os.Exit(0) // the normal exit finishes; shutdown never took over
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSignalDuringExitWaitsForIt$")
+	cmd.Env = append(os.Environ(), signalDuringExitHelperEnv+"=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("the signal's shutdown ended the process during the normal exit: %v\nstderr: %s", err, stderr.String())
+	}
+}

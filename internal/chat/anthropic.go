@@ -524,6 +524,16 @@ func (a *anthropicAccumulator) handleErrorEvent(ev *anthropicEvent, trimmed stri
 	return err
 }
 
+// anthropicEffort maps an effort level onto the ones Anthropic takes (low to max): OpenAI's none
+// and minimal become low.
+func anthropicEffort(effort string) string {
+	switch effort {
+	case "none", "minimal":
+		return "low"
+	}
+	return effort
+}
+
 // errIncompleteStream reports an Anthropic stream that ended without a stop reason: the
 // connection closed cleanly before the response was complete, so its last content block, such as
 // a tool call's arguments, may be cut short.
@@ -605,7 +615,7 @@ func anthropicRequestFor(model config.Model, messages []Message, tools []ToolDef
 		reqPayload.Thinking = &anthropicThinking{Type: "adaptive", Display: "summarized"}
 	}
 	if model.Effort != "" {
-		reqPayload.OutputConfig = &anthropicOutputConfig{Effort: model.Effort}
+		reqPayload.OutputConfig = &anthropicOutputConfig{Effort: anthropicEffort(model.Effort)}
 	}
 	// Prompt caching: one breakpoint at the end of the system prompt, one at
 	// the end of the tool list, and one at the end of the conversation. The

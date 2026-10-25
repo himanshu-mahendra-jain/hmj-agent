@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -94,10 +95,10 @@ func HandleModels(cfg config.Config, sm *session.SessionManager, reader *bufio.R
 // another hmj has it open.
 func resumeItemLabel(c *session.Conversation, openElsewhere bool) string {
 	msgStr := "messages"
-	if c.UserMessageCount() == 1 {
+	if c.PromptCount() == 1 {
 		msgStr = "message"
 	}
-	label := fmt.Sprintf("[%s] %s (%d user %s, model: %s/%s)", c.ID, c.Name, c.UserMessageCount(), msgStr, c.Model.Provider, c.Model.Model)
+	label := fmt.Sprintf("[%s] %s (%d user %s, model: %s/%s)", c.ID, c.Name, c.PromptCount(), msgStr, c.Model.Provider, c.Model.Model)
 	if openElsewhere {
 		label += " [open in another hmj]"
 	}
@@ -165,7 +166,7 @@ func printResumedConversation(conv *session.Conversation) {
 		theme.OK("resumed conversation"),
 		theme.Accent(conv.Name),
 		theme.Muted("(id: "+conv.ID+","),
-		theme.Muted(fmt.Sprintf("%d user messages)", conv.UserMessageCount())),
+		theme.Muted(fmt.Sprintf("%d user messages)", conv.PromptCount())),
 		theme.Muted("model: "+conv.Model.Provider+"/"+conv.Model.Model),
 	)
 	if conv.UserMessageCount() > 0 {
@@ -213,19 +214,25 @@ func HandleResume(cfg config.Config, sm *session.SessionManager, reader *bufio.R
 	return nil
 }
 
-// HandleJobs runs /jobs: it lists the background jobs and, when some are running, offers to
-// stop one. A stopped job is told to the model with the user's next message.
-func HandleJobs(reader *bufio.Reader) error {
+// HandleJobs runs /jobs: it lists the background jobs of every conversation, naming the
+// conversation of those not started in the one whose scratch directory is scratch, and, when
+// some are running, offers to stop one. A stopped job is told to the model with the user's
+// next message.
+func HandleJobs(reader *bufio.Reader, scratch string) error {
 	jobs := tools.Jobs.List()
 	if len(jobs) == 0 {
 		fmt.Println(theme.Muted("[no background jobs]"))
 		return nil
 	}
 	var running []terminal.SelectItem
-	for _, j := range jobs {
-		fmt.Println(theme.Info(theme.Sanitize(j.Text)))
+	for i, j := range jobs {
+		text := theme.Sanitize(j.Text)
+		if j.Owner != scratch && j.Owner != "" {
+			text += "  (conversation " + theme.Sanitize(filepath.Base(j.Owner)) + ")"
+		}
+		fmt.Println(theme.Info(text))
 		if j.Running {
-			running = append(running, terminal.SelectItem{ID: strconv.Itoa(j.ID), Text: theme.Sanitize(j.Text)})
+			running = append(running, terminal.SelectItem{ID: strconv.Itoa(i), Text: text})
 		}
 	}
 	if len(running) == 0 {
@@ -237,14 +244,15 @@ func HandleJobs(reader *bufio.Reader) error {
 	if err != nil || !confirmed || chosen.ID == "" {
 		return err
 	}
-	id, err := strconv.Atoi(chosen.ID)
-	if err != nil {
-		return fmt.Errorf("job %q: %w", chosen.ID, err)
+	i, err := strconv.Atoi(chosen.ID)
+	if err != nil || i < 0 || i >= len(jobs) {
+		return fmt.Errorf("job %q not listed", chosen.ID)
 	}
-	if err := tools.Jobs.StopForUser(id); err != nil {
+	j := jobs[i]
+	if err := tools.Jobs.StopForUser(j.Owner, j.ID); err != nil {
 		return err
 	}
-	fmt.Println(theme.Muted(fmt.Sprintf("[job %d stopped; the model hears of it with your next message]", id)))
+	fmt.Println(theme.Muted(fmt.Sprintf("[job %d stopped; the model hears of it with your next message]", j.ID)))
 	return nil
 }
 

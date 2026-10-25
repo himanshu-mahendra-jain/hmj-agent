@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"hmj-agent/internal/chat"
 )
 
 // jobNumber reads the job number out of a run_command result.
@@ -153,7 +155,7 @@ func TestBackgroundJobOutlivesTheTurnAndStops(t *testing.T) {
 		t.Fatal("halting the turn killed a background job")
 	}
 
-	res, err := (&CheckCommandTool{}).Execute(context.Background(), mustJSON(t, map[string]any{"job": id, "stop": true}))
+	res, err := (&CheckCommandTool{}).Execute(WithScratchDir(context.Background(), dir), mustJSON(t, map[string]any{"job": id, "stop": true}))
 	if err != nil || !strings.Contains(res, "finished: stopped after ") {
 		t.Errorf("stop: %q, %v", res, err)
 	}
@@ -177,7 +179,7 @@ func TestCtrlBMovesARunningCommandToTheBackground(t *testing.T) {
 	scratch := t.TempDir()
 	release := filepath.Join(t.TempDir(), "release")
 	keys := make(chan struct{}, 1)
-	ctx := WithBackgroundKey(WithScratchDir(context.Background(), scratch), keys)
+	ctx := WithBackgroundKey(WithScratchDir(context.Background(), scratch), keys, nil)
 
 	type result struct {
 		out string
@@ -205,7 +207,7 @@ func TestCtrlBMovesARunningCommandToTheBackground(t *testing.T) {
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	j := Jobs.get(jobNumber(t, r.out))
+	j := Jobs.get(scratch, jobNumber(t, r.out))
 	<-j.proc.done
 	Jobs.waitEnded(j)
 	logData, _ := os.ReadFile(j.out.path)
@@ -220,10 +222,11 @@ func TestCtrlBMovesARunningCommandToTheBackground(t *testing.T) {
 // TestCheckCommandWaitIsCapped checks that wait_seconds over the cap still returns, with the
 // job running, once the cap has passed or the turn is halted.
 func TestCheckCommandWaitIsCapped(t *testing.T) {
-	ctx, halt := context.WithCancel(WithScratchDir(context.Background(), t.TempDir()))
+	scratch := t.TempDir()
+	ctx, halt := context.WithCancel(WithScratchDir(context.Background(), scratch))
 	out, _ := (&RunCommandTool{}).Execute(ctx, mustJSON(t, map[string]any{"command": "sleep 30", "background": true}))
 	id := jobNumber(t, out)
-	defer func() { _ = Jobs.Stop(id) }()
+	defer func() { _ = Jobs.Stop(scratch, id) }()
 	time.AfterFunc(100*time.Millisecond, halt)
 	start := time.Now()
 	res, err := (&CheckCommandTool{}).Execute(ctx, mustJSON(t, map[string]any{"job": id, "wait_seconds": 100000}))
@@ -237,7 +240,7 @@ func TestCheckCommandWaitIsCapped(t *testing.T) {
 func TestCtrlBLiftsTheForegroundTimeout(t *testing.T) {
 	scratch := t.TempDir()
 	keys := make(chan struct{}, 1)
-	ctx := WithBackgroundKey(WithScratchDir(context.Background(), scratch), keys)
+	ctx := WithBackgroundKey(WithScratchDir(context.Background(), scratch), keys, nil)
 	done := make(chan string, 1)
 	go func() {
 		out, _ := (&RunCommandTool{}).Execute(ctx, mustJSON(t, map[string]any{"command": "sleep 1.6; echo outlived", "timeout_seconds": 1}))
@@ -245,10 +248,116 @@ func TestCtrlBLiftsTheForegroundTimeout(t *testing.T) {
 	}()
 	time.Sleep(300 * time.Millisecond)
 	keys <- struct{}{}
-	j := Jobs.get(jobNumber(t, <-done))
+	j := Jobs.get(scratch, jobNumber(t, <-done))
 	<-j.proc.done
 	Jobs.waitEnded(j)
 	if res := Jobs.report(j, 5, 1024); !strings.Contains(res, "finished: exit 0 after 2s") || !strings.Contains(res, "outlived") {
 		t.Errorf("report = %q, want exit 0 after the foreground timeout", res)
+	}
+}
+
+// TestJobsAreNumberedPerConversation checks that each conversation numbers its own jobs from 1,
+// that check_command reaches only its own conversation's, and that the numbers go on from the
+// logs a conversation already has, as after a restart.
+func TestJobsAreNumberedPerConversation(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	start := func(scratch string) int {
+		t.Helper()
+		out, err := (&RunCommandTool{}).Execute(WithScratchDir(context.Background(), scratch), mustJSON(t, map[string]any{"command": "sleep 30", "background": true}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := jobNumber(t, out)
+		t.Cleanup(func() { _ = Jobs.Stop(scratch, id) })
+		return id
+	}
+	if first, second, other := start(a), start(a), start(b); first != 1 || second != 2 || other != 1 {
+		t.Errorf("jobs numbered %d, %d and %d in the other conversation; want 1, 2 and 1", first, second, other)
+	}
+	_, err := (&CheckCommandTool{}).Execute(WithScratchDir(context.Background(), b), `{"job": 2, "stop": true}`)
+	if err == nil || !strings.Contains(err.Error(), "no background job 2; this conversation's jobs: 1") {
+		t.Errorf("job 2 of another conversation: %v", err)
+	}
+	if Jobs.get(a, 2).done() {
+		t.Error("another conversation stopped job 2")
+	}
+
+	if j := NewJobRegistry().newJob(a, "true"); j.ID != 3 {
+		t.Errorf("after a restart the next job is %d, want 3", j.ID)
+	} else {
+		j.out.close()
+	}
+}
+
+// A job started before hmj restarted is not in the registry, but its log is: check_command
+// points the model at it rather than saying the conversation has no jobs.
+func TestCheckCommandFindsTheLogOfAJobFromBeforeARestart(t *testing.T) {
+	scratch := t.TempDir()
+	log := filepath.Join(scratch, "jobs", "job3_20261024-223426_benchmark.log")
+	if err := os.MkdirAll(filepath.Dir(log), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(log, []byte("done\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithScratchDir(context.Background(), scratch)
+	_, err := (&CheckCommandTool{}).Execute(ctx, `{"job": 3}`)
+	if err == nil || !strings.Contains(err.Error(), "started before hmj restarted") || !strings.Contains(err.Error(), log) {
+		t.Errorf("job 3 from before a restart: %v", err)
+	}
+	_, err = (&CheckCommandTool{}).Execute(ctx, `{"job": 13}`)
+	if err == nil || !strings.Contains(err.Error(), "no background job 13; this conversation has no background jobs") {
+		t.Errorf("job 13, which has no log: %v", err)
+	}
+}
+
+// TestLostNoticesNameJobsWhoseEndWasNeverTold checks that a reopened conversation's jobs that
+// were started but never told ended, and that this process does not track, get a notice with
+// the log's last lines and path, and that once the notice is in the transcript it is not given
+// again.
+func TestLostNoticesNameJobsWhoseEndWasNeverTold(t *testing.T) {
+	scratch := t.TempDir()
+	dir := filepath.Join(scratch, "jobs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logs := map[int]string{}
+	for id, text := range map[int]string{1: "built\n", 2: "## FilterRulesScreenTest landscape: OK (17 tests)\n", 3: "partial\n"} {
+		logs[id] = filepath.Join(dir, "job"+strconv.Itoa(id)+"_20261025-033320_gradlew.log")
+		if err := os.WriteFile(logs[id], []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := NewJobRegistry()
+	tracked, err := r.start(scratch, "exit 0", scratch, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.waitEnded(tracked)
+	transcript := []chat.Message{
+		{Role: "tool", Content: "[started background job 1; its output is in " + logs[1] + ". You will be told …]"},
+		{Role: "user", Content: "[background job 1 finished: exit 0 after 4s: ./gradlew]\nbuilt\n[its output is in " + logs[1] + "]"},
+		{Role: "tool", Content: "[started background job 2; its output is in " + logs[2] + ". You will be told …]"},
+		{Role: "tool", Content: "before\n[moved to the background by the user as job 3 after 5s, which ended your turn; …]"},
+		{Role: "assistant", Content: "[started background job 5; quoted by the model]"},
+		{Role: "tool", Content: "[started background job 6; its log is gone]"},
+		{Role: "tool", Content: "[started background job " + strconv.Itoa(tracked.ID) + "; tracked by this process]"},
+	}
+	notices := r.LostNotices(scratch, transcript)
+	if len(notices) != 2 {
+		t.Fatalf("got %d notices, want jobs 2 and 3: %q", len(notices), notices)
+	}
+	for i, want := range []string{"[background job 2 never reported its end, as hmj stopped first;", "[background job 3 never reported its end"} {
+		if !strings.HasPrefix(notices[i], want) {
+			t.Errorf("notice %d: %q, want it to start %q", i, notices[i], want)
+		}
+	}
+	if want := "\n## FilterRulesScreenTest landscape: OK (17 tests)\n[its output is in " + logs[2] + "]"; !strings.HasSuffix(notices[0], want) {
+		t.Errorf("job 2's notice lacks its last lines and log: %q", notices[0])
+	}
+	// The notices lead the next message, which the resumed transcript splits apart again.
+	transcript = append(transcript, chat.Message{Role: "user", Content: strings.Join(notices, "\n\n") + "\n\nwhat now?"})
+	if again := r.LostNotices(scratch, transcript); len(again) != 0 {
+		t.Errorf("notices given twice: %q", again)
 	}
 }

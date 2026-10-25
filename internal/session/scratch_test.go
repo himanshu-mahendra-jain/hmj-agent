@@ -52,7 +52,9 @@ func TestPruneScratchOnLoad(t *testing.T) {
 	dir := t.TempDir()
 	path := dir
 	sm := LoadSessionManager(path, config.ModelRef{Provider: "p", Model: "m"})
-	fresh, stale := sm.Active(), sm.New("")
+	fresh := sm.Active()
+	say(fresh, "hi") // used, so leaving it keeps it
+	stale := sm.New("")
 	if err := sm.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +99,7 @@ func TestPruneScratchOnLoad(t *testing.T) {
 // TestScratchPromptNamesTheDirectory checks the system prompt's paragraph.
 func TestScratchPromptNamesTheDirectory(t *testing.T) {
 	p := ScratchPrompt("/home/u/.hmj/projects/x/scratch/3")
-	for _, want := range []string{"/home/u/.hmj/projects/x/scratch/3", "$HMJ_SCRATCH", "not in /tmp or the project"} {
+	for _, want := range []string{"/home/u/.hmj/projects/x/scratch/3", "$HMJ_SCRATCH", "not in /tmp or the project", "give its full path: $HMJ_SCRATCH is not set in the user's shell"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("%q lacks %q", p, want)
 		}

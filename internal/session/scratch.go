@@ -24,7 +24,8 @@ var (
 func ScratchPrompt(dir string) string {
 	return fmt.Sprintf("\n\nYour scratch directory for this conversation is %s (also $HMJ_SCRATCH in run_command). "+
 		"Put temporary files there, such as logs, saved command output, copies of files and throwaway scripts, "+
-		"not in /tmp or the project. It is kept while the conversation exists, until 7 days after its last change.", dir)
+		"not in /tmp or the project. It is kept while the conversation exists, until 7 days after its last change. "+
+		"When you tell the user about a file there, give its full path: $HMJ_SCRATCH is not set in the user's shell.", dir)
 }
 
 // scratchRoot returns the directory that holds the conversations' scratch directories, next to
