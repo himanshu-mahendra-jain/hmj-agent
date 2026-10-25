@@ -44,9 +44,9 @@ func TestMain(m *testing.M) {
 	binPath = filepath.Join(dir, "hmj")
 	args := []string{"build", "-trimpath", "-o", binPath}
 	if coverDir != "" {
-		args = append(args, "-cover", "-covermode=atomic", "-coverpkg=hmj-agent/...")
+		args = append(args, "-cover", "-covermode=atomic", "-coverpkg=hmj-agent/v2/...")
 	}
-	build := exec.Command("go", append(args, "hmj-agent")...)
+	build := exec.Command("go", append(args, "hmj-agent/v2")...)
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: building hmj: %v\n%s", err, out)

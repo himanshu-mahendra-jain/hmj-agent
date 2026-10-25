@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/tools"
 )
 
 // BenchmarkListFiles_FlatDirectory tests listing 200 files in a single flat directory.

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // covLockedBuffer lets a spinner goroutine write while the test reads.

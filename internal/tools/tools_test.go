@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/tools"
 )
 
 func TestEditFileIgnoreWhitespace(t *testing.T) {

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal/theme"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal/theme"
+	"hmj-agent/v2/internal/tools"
 )
 
 // captureOutput returns what fn writes to os.Stdout.

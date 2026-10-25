@@ -2,7 +2,7 @@ package session
 
 import (
 	"fmt"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/logging"
 	"io/fs"
 	"os"
 	"path/filepath"

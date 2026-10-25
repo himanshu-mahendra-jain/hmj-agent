@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // geminiGeneratedCallIDPrefix marks tool-call IDs minted locally because Gemini

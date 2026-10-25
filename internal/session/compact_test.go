@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // chatTurns builds n plain question/answer turns after a system prompt.

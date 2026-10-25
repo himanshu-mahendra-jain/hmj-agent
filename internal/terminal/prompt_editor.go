@@ -2,7 +2,7 @@ package terminal
 
 import (
 	"fmt"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 	"os"
 	"slices"
 	"strings"

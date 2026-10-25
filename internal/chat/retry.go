@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/logging"
 )
 
 type RetryConfig struct {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"slices"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/tools"
 )
 
 const (

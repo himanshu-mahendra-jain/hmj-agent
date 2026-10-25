@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"hmj-agent/internal/terminal"
+	"hmj-agent/v2/internal/terminal"
 )
 
 // assertNotHijacked fails when the screen was cleared (the banner scrolled away is fine, a

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // quietTools are the tools whose output only the model needs: the transcript shows each call

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // jobNumber reads the job number out of a run_command result.

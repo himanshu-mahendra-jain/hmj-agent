@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // useMarkdownTheme sets colour on and accessibility mode as given for the rest of the test.

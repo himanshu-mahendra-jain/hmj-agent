@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/session"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/session"
 )
 
 func TestVerificationMandateInPrompt(t *testing.T) {

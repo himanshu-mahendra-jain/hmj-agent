@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 const geminiTestKey = "test-gemini-key"

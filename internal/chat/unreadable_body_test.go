@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // cutOffServer answers every request with status and a body that ends after sent, short of

@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"hmj-agent/internal/lint"
+	"hmj-agent/v2/internal/lint"
 )
 
 func main() {

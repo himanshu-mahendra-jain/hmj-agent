@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // lockedBuffer is a goroutine-safe sink for the ticker's writes.

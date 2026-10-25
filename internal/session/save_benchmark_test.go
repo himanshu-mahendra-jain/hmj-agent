@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/session"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/session"
 )
 
 // BenchmarkSave saves a session of five conversations of 200 KB each, about 1 MB, to real

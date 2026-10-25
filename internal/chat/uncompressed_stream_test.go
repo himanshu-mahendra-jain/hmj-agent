@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // TestModelRequestsAskForNoCompression checks that model requests do not ask for gzip, which Go

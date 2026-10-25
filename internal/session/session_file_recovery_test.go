@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // captureStderr returns what fn writes to os.Stderr.

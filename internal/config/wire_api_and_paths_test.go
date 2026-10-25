@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 func TestConfigRejectsUnknownAPI(t *testing.T) {

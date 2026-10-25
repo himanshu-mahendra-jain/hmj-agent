@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // benchmarkConversation is a long agentic conversation of about 400K tokens (1.6 MB of

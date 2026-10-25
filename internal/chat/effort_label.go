@@ -1,6 +1,6 @@
 package chat
 
-import "hmj-agent/internal/config"
+import "hmj-agent/v2/internal/config"
 
 // EffortLabel says what reasoning effort requests to model over provider carry: the configured
 // level; "default" when none is set, leaving it to the provider; how Gemini narrows xhigh and

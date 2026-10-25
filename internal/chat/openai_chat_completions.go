@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // OpenAI Chat Completions wire types, for the many OpenAI-compatible servers (Ollama,

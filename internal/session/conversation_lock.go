@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/logging"
 )
 
 // ErrOpenElsewhere matches, via errors.Is, opening, renaming or deleting a conversation that

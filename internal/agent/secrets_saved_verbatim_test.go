@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/agent"
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/agent"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/tools"
 )
 
 // secretEchoTool returns its own arguments, so a secret the model passes in lands in a tool result.

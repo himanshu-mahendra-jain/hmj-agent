@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // TestAnthropicRequestBodyIsDeterministic checks that the same request always encodes to the same

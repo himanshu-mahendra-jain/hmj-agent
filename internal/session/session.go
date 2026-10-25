@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
 )
 
 const (

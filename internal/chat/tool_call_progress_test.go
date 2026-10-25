@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // TestToolCallProgressFromEachProvider streams a write_file call from each provider and checks

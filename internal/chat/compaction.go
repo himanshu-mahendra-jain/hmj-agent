@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
 )
 
 // The kinds of compaction block. A compaction message is an assistant message whose only content

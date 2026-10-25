@@ -9,9 +9,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/tools"
 )
 
 // TestAnthropicToolFlags sends the agent's own tools to a mock Anthropic API and checks that none

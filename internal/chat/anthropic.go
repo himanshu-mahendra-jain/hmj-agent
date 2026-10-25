@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
 )
 
 // DefaultAnthropicMaxTokens is the output limit applied to Anthropic requests when the model does

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 	"io"
 	"os"
 	"strings"

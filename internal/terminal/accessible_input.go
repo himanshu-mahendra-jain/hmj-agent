@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // Accessibility input is append-only: it never moves the cursor, redraws a line or hides

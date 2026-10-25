@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // TestStarterConfigFirstRunFlow writes the starter template on a first run and checks that it

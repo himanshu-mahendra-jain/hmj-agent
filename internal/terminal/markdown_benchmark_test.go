@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // benchmarkAnswer is about 100 KB of the Markdown a model writes: headings, prose with

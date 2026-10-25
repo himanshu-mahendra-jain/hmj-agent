@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // newTTYSpinner builds a spinner over an in-memory buffer with isTTY=true,

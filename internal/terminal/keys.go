@@ -3,7 +3,7 @@ package terminal
 import (
 	"context"
 	"fmt"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 	"os"
 	"strings"
 	"time"

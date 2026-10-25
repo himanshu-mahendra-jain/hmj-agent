@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 type InputItem struct {

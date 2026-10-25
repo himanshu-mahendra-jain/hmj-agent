@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/tools"
 )
 
 // TestToolPropertiesGoOutInTheirOrder sends the agent's tools to each provider and checks that

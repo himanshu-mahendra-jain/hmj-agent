@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/tools"
 )
 
 // Regression tests for a session that stopped for good: a fetch_url of googlesource's

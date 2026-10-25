@@ -6,7 +6,7 @@ import (
 	"slices"
 	"time"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 // CompactAtTokens is the context size, in tokens, above which a conversation is compacted once

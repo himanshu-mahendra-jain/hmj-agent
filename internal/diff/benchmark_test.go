@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/diff"
+	"hmj-agent/v2/internal/diff"
 )
 
 func generateLines(count int, prefix string) string {

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // TestThoughtsCollapseToOneLine checks that the model's reasoning is not printed and that one

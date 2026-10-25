@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 var errLimitReached = errors.New("limit_reached")

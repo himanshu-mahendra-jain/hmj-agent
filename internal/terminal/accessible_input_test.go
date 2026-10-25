@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // swapStdin points os.Stdin at f for the rest of the test. A pipe is not a terminal, so the

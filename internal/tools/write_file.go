@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 type WriteFileTool struct{}

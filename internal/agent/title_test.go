@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/session"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/session"
 )
 
 // titleServer is a fake Responses provider. Requests carrying the title instruction get titleStatus

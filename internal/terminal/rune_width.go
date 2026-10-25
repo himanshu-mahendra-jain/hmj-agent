@@ -1,7 +1,7 @@
 package terminal
 
 import (
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 	"unicode"
 )
 

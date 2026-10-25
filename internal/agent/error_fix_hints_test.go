@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 func TestRemediationHint(t *testing.T) {

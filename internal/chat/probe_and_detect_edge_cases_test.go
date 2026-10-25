@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // TestProbeModelFailuresBeforeTheRequest checks the health probe for models it cannot even send a

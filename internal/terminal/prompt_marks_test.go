@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // TestPromptMarksWrapPromptAndOutput checks the OSC 133 marks on a real terminal: prompt start

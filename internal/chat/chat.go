@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
 )
 
 // Message is one turn of a chat transcript, either sent to or received from a model.

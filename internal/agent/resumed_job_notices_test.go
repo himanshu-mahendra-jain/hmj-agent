@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // jobNotice is a finish notice as the job registry writes it, with blank lines in its output.

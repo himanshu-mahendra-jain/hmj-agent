@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"hmj-agent/internal/chat"
+	"hmj-agent/v2/internal/chat"
 )
 
 type FetchURLTool struct {

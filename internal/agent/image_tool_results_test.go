@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/tools"
 )
 
 // pictureTool answers with a picture, or with err when set.

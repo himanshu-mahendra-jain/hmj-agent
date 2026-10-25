@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/config"
+	"hmj-agent/v2/internal/config"
 )
 
 // clientFor returns a client with one provider "p" speaking api at baseURL, model "m", and

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 func TestParseMarkdownTable(t *testing.T) {

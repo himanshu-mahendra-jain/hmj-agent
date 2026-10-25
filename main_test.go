@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/terminal/theme"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/terminal/theme"
+	"hmj-agent/v2/internal/tools"
 )
 
 func TestRunFlags(t *testing.T) {

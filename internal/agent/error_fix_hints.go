@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"os"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // RemediationHint suggests a fix for a common startup or request failure, or returns ""

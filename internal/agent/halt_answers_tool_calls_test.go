@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"hmj-agent/internal/agent"
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/session"
-	"hmj-agent/internal/tools"
+	"hmj-agent/v2/internal/agent"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/session"
+	"hmj-agent/v2/internal/tools"
 )
 
 // haltingTool cancels the turn while it runs, simulating the user pressing Esc during a tool call.

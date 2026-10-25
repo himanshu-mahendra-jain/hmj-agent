@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/chat"
-	"hmj-agent/internal/session"
+	"hmj-agent/v2/internal/chat"
+	"hmj-agent/v2/internal/session"
 )
 
 func buildBenchmarkConversation(turnCount int, toolOutputLines int) *session.Conversation {

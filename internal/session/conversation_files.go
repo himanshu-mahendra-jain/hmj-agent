@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"hmj-agent/internal/config"
-	"hmj-agent/internal/logging"
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/config"
+	"hmj-agent/v2/internal/logging"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // The session directory holds one file per conversation, conversations/<id>.json, so two hmj

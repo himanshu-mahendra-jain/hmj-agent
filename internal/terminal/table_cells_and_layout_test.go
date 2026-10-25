@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"hmj-agent/internal/terminal/theme"
+	"hmj-agent/v2/internal/terminal/theme"
 )
 
 // withPlainTheme turns colour and accessibility off for one test and restores them after.
