@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-25
+
 This is a major rewrite and breaks compatibility with the 1.0.x releases. Saved conversations, some config files, command lines and scripts that worked with an older version need changes:
 
 ### Breaking changes
