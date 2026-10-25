@@ -22,7 +22,7 @@ check:
 # Known vulnerabilities in dependencies and the Go standard library (needs network access).
 # Pinned, since it runs in the release job that builds the binaries; bump it by hand.
 vuln:
-	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 test:
 	go test ./... -count=1 -shuffle=on -race -coverpkg=./... -coverprofile=cover.out
