@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"hmj-agent/v2/internal/chat"
 )
@@ -359,5 +360,19 @@ func TestLostNoticesNameJobsWhoseEndWasNeverTold(t *testing.T) {
 	transcript = append(transcript, chat.Message{Role: "user", Content: strings.Join(notices, "\n\n") + "\n\nwhat now?"})
 	if again := r.LostNotices(scratch, transcript); len(again) != 0 {
 		t.Errorf("notices given twice: %q", again)
+	}
+}
+
+// TestTailLinesCutInsideACharacter checks a last line longer than maxBytes in scripts whose
+// characters take two, three and four bytes: the cut never leaves a broken character.
+func TestTailLinesCutInsideACharacter(t *testing.T) {
+	for _, char := range []string{"ع", "日", "क", "😀"} {
+		line := strings.Repeat(char, 100)
+		for maxBytes := 50; maxBytes < 54; maxBytes++ {
+			got := tailLines("first\n"+line, 5, maxBytes)
+			if !utf8.ValidString(got) || !strings.HasSuffix(line, got) || len(got) <= maxBytes-len(char) {
+				t.Errorf("%s, maxBytes %d: got %q, want the line's last whole characters", char, maxBytes, got)
+			}
+		}
 	}
 }

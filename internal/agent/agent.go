@@ -522,8 +522,10 @@ func (r *Runner) runTool(ctx context.Context, tc chat.ToolCall, spinner *termina
 	}
 	logTool(toolName, toolArgs, toolDuration, output, execErr)
 	audit.Record(toolName, toolArgs, toolDuration, len(output), execErr)
-	// The terminal shows what the model gets; the logs above keep the full size.
-	output = capToolResult(toolName, output)
+	// The terminal shows what the model gets; the logs above keep the full size. Bytes that are
+	// not UTF-8 become U+FFFD: the request and the saved conversation are JSON, which cannot
+	// carry them, so one such result would fail every later request and save.
+	output = strings.ToValidUTF8(capToolResult(toolName, output), "\uFFFD")
 	if quiet {
 		printQuietToolResult(toolName, toolArgs, output, len(res.Images) > 0, toolDuration)
 	} else {

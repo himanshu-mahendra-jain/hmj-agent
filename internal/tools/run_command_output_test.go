@@ -162,3 +162,12 @@ func TestCommandLogName(t *testing.T) {
 		}
 	}
 }
+
+// TestRunCommandShortOutputIsValidUTF8 checks an output that holds a broken character, as
+// `cut -c` leaves when it cuts inside Arabic text: the broken bytes are dropped.
+func TestRunCommandShortOutputIsValidUTF8(t *testing.T) {
+	got := runCommand(t, `printf 'ok \331\nnext'`)
+	if want := "ok \nnext"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-10-26
+
+### Fixed
+
+* A tool result holding bytes that are not UTF-8, such as `cut -c` output cut inside Arabic text, no longer breaks the conversation. Every later request failed with `jsontext: invalid UTF-8 within "/messages/…"` and the conversation stopped being saved. `run_command` now drops a broken character from a short output, as it already did for a long one, and any other tool's invalid bytes become U+FFFD. The last lines of a background job, given to the model when it ends, no longer start with a broken character when a long line is cut.
+
 ## [2.0.0] - 2026-10-25
 
 This is a major rewrite and breaks compatibility with the 1.0.x releases. Saved conversations, some config files, command lines and scripts that worked with an older version need changes:
