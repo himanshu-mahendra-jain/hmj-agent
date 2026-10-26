@@ -157,7 +157,7 @@ func (o *commandOutput) finish() string {
 		pruneDir(dir, maxCommandLogFiles, maxCommandLogDirBytes)
 	}
 	if !o.long {
-		return strings.TrimRight(string(o.head), "\r\n")
+		return strings.TrimRight(strings.ToValidUTF8(string(o.head), ""), "\r\n")
 	}
 
 	head := o.head

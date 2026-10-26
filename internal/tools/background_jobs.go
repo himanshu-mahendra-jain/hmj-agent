@@ -175,9 +175,10 @@ func (o *jobOutput) lastLines(n, maxBytes int) string {
 	return tailLines(text, n, maxBytes)
 }
 
-// tailLines returns up to n of the last lines of text, within maxBytes.
+// tailLines returns up to n of the last lines of text, within maxBytes. Broken characters are
+// dropped after the cut, which can fall inside a line that has no line break to start on.
 func tailLines(text string, n, maxBytes int) string {
-	text = strings.TrimRight(strings.ToValidUTF8(text, ""), "\r\n")
+	text = strings.TrimRight(text, "\r\n")
 	lines := strings.Split(text, "\n")
 	lines = lines[max(0, len(lines)-n):]
 	text = strings.Join(lines, "\n")
@@ -187,7 +188,7 @@ func tailLines(text string, n, maxBytes int) string {
 			text = text[i+1:] // start on a whole line
 		}
 	}
-	return text
+	return strings.TrimRight(strings.ToValidUTF8(text, ""), "\r\n")
 }
 
 // where names the log for a report: its path, and what went wrong with it.
