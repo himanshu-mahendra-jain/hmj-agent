@@ -382,7 +382,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A(["turn ended"]) --> B{"estimate > 400K tokens<br/>and something to compact?"}
+    A(["turn ended"]) --> B{"estimate > 400K tokens or turn refused as too long,<br/>and something to compact?"}
     B -- no --> Z([nothing])
     B -- yes --> C["snapshot messages[0:upTo]<br/>goroutine: Quiet client.Compact"]
     C --> D["user types next prompt meanwhile"]
@@ -404,12 +404,15 @@ How each protocol compacts (`chat/compaction.go`):
 | OpenAI Responses | `POST /responses/compact` | `responses_compacted_window` (opaque items) |
 | Chat Completions, Gemini | an ordinary request ending in the summary instruction (tools still defined) | `summary` |
 | Any, on HTTP 400/404 | falls back to the summary request | `summary` |
+| Any, refused as too long (`IsContextOverflow`) | the shortened summary request below, skipping the full summary request | `summary` |
 
 - A turn is **never** compacted mid-way. Requests go out past 400K if they must.
+- A turn that ended because the provider refused a request as too long for the model (`IsContextOverflow`) is followed by a compaction whatever the estimate, so a model with a context window under 400K recovers too (`agent/compact.go`, `main.go` `runTurn`).
+- **Too long to compact whole** (`chat/compaction_shortened.go`): when the compaction or summary request is refused as over the context limit, the model summarizes a shortened plain-text transcript instead: the system prompt, then one user message holding the transcript and the summary instruction, with no tools, tool calls or reasoning blocks, so no thinking signature can break. Each string in a tool call's arguments and each tool result is cut to 1KB (so a write keeps its path), each call to 8KB and each text to 16KB. Everything up to the first user message is kept; past the budget the oldest of the rest are left out behind a note. The budget starts at 800KB and is halved on each further refusal; after 4 attempts the refusal is reported.
 - A compaction block from another protocol is sent as a portable user message (`SummaryPrefix` + text) followed by the reply `SummaryAck`. A Responses window, which cannot be read elsewhere, becomes a fixed "could not be read" note.
 - If the conversation shrank meanwhile (`ErrCompactionOutdated`), nothing changes. If archiving fails, the compaction is still applied and a warning is printed.
 
-**Verified by:** `internal/session/compact_test.go` (only over the limit, not for a compaction alone, replaces the compacted messages, refuses a shorter conversation, token estimate from the reported prompt size), `internal/session/history_test.go` (replaced turns kept for `/history`, compaction still applied when the history file cannot be written), `internal/agent/compaction_test.go` (runs after the turn, failure and stop leave the conversation, a halted tool round over the limit), `internal/chat/anthropic_compaction_test.go` and `internal/chat/openai_responses_compact_test.go` (native requests, fallback to a summary on rejection), `internal/chat/compaction_test.go` (a foreign compaction is sent as text by every protocol), `e2e/compaction_test.go`, `e2e/resume_selector_paging_and_halts_test.go` `TestHaltWhileCompacting`.
+**Verified by:** `internal/session/compact_test.go` (only over the limit, not for a compaction alone, replaces the compacted messages, refuses a shorter conversation, token estimate from the reported prompt size), `internal/session/history_test.go` (replaced turns kept for `/history`, compaction still applied when the history file cannot be written), `internal/agent/compaction_test.go` (runs after the turn, failure and stop leave the conversation, a halted tool round over the limit, a turn refused as too long under the limit), `internal/chat/anthropic_compaction_test.go` and `internal/chat/openai_responses_compact_test.go` (native requests, fallback to a summary on rejection), `internal/chat/compaction_test.go` (a foreign compaction is sent as text by every protocol), `internal/chat/compaction_shortened_test.go` (per-field cuts, oldest left out over the budget, every protocol recovers from a too-long refusal with no tools or signatures sent, the budget halves and gives up after 4 attempts), `e2e/compaction_test.go` (including `TestTooLongConversationIsCompactedFromAShortenedCopy` and `TestTooLongTurnIsCompactedUnderTheLimit`), `e2e/resume_selector_paging_and_halts_test.go` `TestHaltWhileCompacting`.
 
 ### 5.10 Sessions and multi-process safety
 
@@ -565,6 +568,7 @@ All request bodies are encoded with **map keys sorted** (`json.Deterministic`), 
 | Retries | 3; backoff 1s × 2ⁿ, cap 15s, ±20% jitter; +2s on server waits | `chat/retry.go:29` |
 | Tool result cap | 256KB + 64KB = 320KB | `agent/oversized_tool_results.go:16` |
 | Min result removed on overflow | 1KB | `agent/oversized_tool_results.go:19` |
+| Shortened compaction transcript | 800KB, halved on each refusal, 4 attempts; 1KB per tool string or result, 8KB per call, 16KB per text | `chat/compaction_shortened.go:19-27` |
 | read_file | 2000 lines / 256KB per call; 10MB file | `tools/tool.go:16-24` |
 | edit/write size | 10MB | `tools/tool.go:18-20` |
 | run_command output | 64KB (16KB head + 48KB tail); log ≤ 64MB | `tools/tool.go:26`, `tools/run_command_output.go:18,30` |
@@ -623,7 +627,7 @@ hmj is an **unrestricted** agent. Its safety comes from the environment it runs 
 
 ## 14. Known limitations
 
-- A model whose context window is under 400K is not compacted any earlier. A long conversation on it can fail on size, and then the user starts a new one with `Ctrl+N`.
+- A model whose context window is under 400K is compacted only once a request has been refused as too long, so that turn fails and the next one continues from the summary.
 - The token estimate between provider reports is 4 bytes per token, which is low for code.
 - After compaction the model sees only the summary. Images in replaced turns survive only as the summary describes them.
 - A conversation is single-writer: a second hmj in the same project starts its own conversation instead of joining the open one.

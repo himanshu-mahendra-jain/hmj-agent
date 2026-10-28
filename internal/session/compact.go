@@ -10,7 +10,8 @@ import (
 )
 
 // CompactAtTokens is the context size, in tokens, above which a conversation is compacted once
-// its turn has ended. A turn is never compacted while it runs, even past this size.
+// its turn has ended. A turn is never compacted while it runs, even past this size. A turn the
+// provider refused as too long for the model is followed by a compaction whatever the size.
 const CompactAtTokens = 400_000
 
 // ErrCompactionOutdated is returned by ApplyCompaction when the conversation no longer starts
@@ -45,11 +46,14 @@ func messageBytes(msgs []chat.Message) int {
 }
 
 // NeedsCompaction reports whether the conversation is over CompactAtTokens and has something to
-// compact: messages after its system prompt other than a compaction alone.
+// compact.
 func (c *Conversation) NeedsCompaction() bool {
-	if c.EstimateTokens() <= CompactAtTokens {
-		return false
-	}
+	return c.EstimateTokens() > CompactAtTokens && c.CanCompact()
+}
+
+// CanCompact reports whether the conversation has something to compact: messages after its system
+// prompt other than a compaction alone.
+func (c *Conversation) CanCompact() bool {
 	rest := c.Messages[c.historyStart():]
 	return len(rest) > 1 || (len(rest) == 1 && rest[0].CompactionBlock() == nil)
 }

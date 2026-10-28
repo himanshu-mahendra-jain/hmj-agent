@@ -588,17 +588,19 @@ func (a *app) dispatch(input string, action terminal.ShortcutAction, conv *sessi
 	}
 }
 
-// runTurn sends input to the model as one turn, then starts the compaction it may need and
-// saves the session. An empty input is a turn for background jobs that have ended.
+// runTurn sends input to the model as one turn, then starts the compaction it may need, also
+// after a request the provider refused as too long, and saves the session. An empty input is a
+// turn for background jobs that have ended.
 func (a *app) runTurn(conv *session.Conversation, input string) {
 	a.reloadConfig()
 	a.busy <- struct{}{}
 	defer func() { <-a.busy }()
-	if err := a.runner.Run(a.ctx, conv, input); err != nil {
+	err := a.runner.Run(a.ctx, conv, input)
+	if err != nil {
 		fmt.Fprintln(os.Stderr)
 		reportError("request to "+conv.Model.Provider+"/"+conv.Model.Model, err)
 	}
-	a.compaction = a.runner.StartCompaction(a.ctx, conv)
+	a.compaction = a.runner.StartCompaction(a.ctx, conv, err)
 	a.saveSession()
 	a.afterTurn = true
 }

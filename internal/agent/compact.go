@@ -25,12 +25,16 @@ type Compaction struct {
 	err    error
 }
 
-// StartCompaction starts compacting conv when it is over session.CompactAtTokens, and returns nil
-// when it is not. It is called once a turn has ended, never during one. The request is made with
-// the conversation as it stands, on a client that reports only to the diagnostic log, so it can
-// run while the next prompt is typed; nothing may be appended to conv until Finish has run.
-func (r *Runner) StartCompaction(ctx context.Context, conv *session.Conversation) *Compaction {
-	if !conv.NeedsCompaction() {
+// StartCompaction starts compacting conv when it is over session.CompactAtTokens, or when
+// turnErr, the error the turn ended with, is the provider's refusal of a request too long for the
+// model, which the estimate may not foresee on a model with a smaller context window. It returns
+// nil when neither holds or there is nothing to compact. It is called once a turn has ended,
+// never during one. The request is made with the conversation as it stands, on a client that
+// reports only to the diagnostic log, so it can run while the next prompt is typed; nothing may
+// be appended to conv until Finish has run.
+func (r *Runner) StartCompaction(ctx context.Context, conv *session.Conversation, turnErr error) *Compaction {
+	tooLong := chat.IsContextOverflow(turnErr) && conv.CanCompact()
+	if !tooLong && !conv.NeedsCompaction() {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -43,7 +47,7 @@ func (r *Runner) StartCompaction(ctx context.Context, conv *session.Conversation
 	}
 	messages := slices.Clone(conv.Messages)
 	client := r.Client.Quiet()
-	logging.L().Info("compacting conversation", "model", conv.Model.Model, "tokens", c.tokens)
+	logging.L().Info("compacting conversation", "model", conv.Model.Model, "tokens", c.tokens, "after_too_long", tooLong)
 	go func() {
 		defer close(c.done)
 		c.result, c.err = client.Compact(ctx, conv.Model, messages, r.ToolDefs)

@@ -1357,7 +1357,7 @@ func TestCompactionRunsAfterTheTurnOverTheLimit(t *testing.T) {
 		t.Fatalf("got %d requests during the turn, want only the turn's own", len(requests))
 	}
 
-	runner.StartCompaction(context.Background(), conv).Finish()
+	runner.StartCompaction(context.Background(), conv, nil).Finish()
 	if len(requests) != 2 || paths[1] != "/responses/compact" {
 		t.Fatalf("requests to %v, want the turn and one compact request", paths)
 	}

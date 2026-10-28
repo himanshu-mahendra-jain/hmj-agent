@@ -116,8 +116,9 @@ func portableCompactions(messages []Message, native string) []Message {
 // conversation's requests do. The provider's compaction API is used where it has one: Anthropic's
 // on-demand compaction, or the OpenAI Responses compact endpoint. Elsewhere the model writes a summary in an ordinary request, which is
 // also the fallback when the provider rejects the compaction request as invalid or does not
-// offer it, as a compatible service or an older model may. Retryable failures are retried according to
-// RetryConfig.
+// offer it, as a compatible service or an older model may. When the provider finds the
+// conversation too long for the model, the model summarizes a shortened copy of it instead
+// (summarizeShortened). Retryable failures are retried according to RetryConfig.
 func (c *Client) Compact(ctx context.Context, ref config.ModelRef, messages []Message, tools []ToolDefinition) (Message, error) {
 	provider, model, err := c.Config.ResolveModel(ref)
 	if err != nil {
@@ -135,11 +136,26 @@ func (c *Client) Compact(ctx context.Context, ref config.ModelRef, messages []Me
 	case config.APIResponses:
 		compacted, err = c.compactResponses(ctx, provider, model, messages)
 	default:
-		return c.summarize(ctx, ref, messages, tools)
+		return c.summarizeOrShorten(ctx, ref, messages, tools)
+	}
+	if IsContextOverflow(err) {
+		logging.L().Warn("conversation too long to compact; summarizing a shortened copy", "provider", ref.Provider, "api", api, "error", err.Error())
+		return c.summarizeShortened(ctx, ref, messages)
 	}
 	if statusErr, ok := errors.AsType[*StatusError](err); ok && (statusErr.Code == http.StatusBadRequest || statusErr.Code == http.StatusNotFound) {
 		logging.L().Warn("compaction request rejected; summarizing instead", "provider", ref.Provider, "api", api, "error", err.Error())
-		return c.summarize(ctx, ref, messages, tools)
+		return c.summarizeOrShorten(ctx, ref, messages, tools)
+	}
+	return compacted, err
+}
+
+// summarizeOrShorten has the model summarize messages, and a shortened copy of them when they are
+// too long for the model.
+func (c *Client) summarizeOrShorten(ctx context.Context, ref config.ModelRef, messages []Message, tools []ToolDefinition) (Message, error) {
+	compacted, err := c.summarize(ctx, ref, messages, tools)
+	if IsContextOverflow(err) {
+		logging.L().Warn("conversation too long to summarize; summarizing a shortened copy", "provider", ref.Provider, "error", err.Error())
+		return c.summarizeShortened(ctx, ref, messages)
 	}
 	return compacted, err
 }
@@ -151,6 +167,12 @@ func (c *Client) summarize(ctx context.Context, ref config.ModelRef, messages []
 	request := make([]Message, 0, len(messages)+1)
 	request = append(request, messages...)
 	request = append(request, Message{Role: "user", Content: summaryInstruction})
+	return c.writeSummary(ctx, ref, request, tools)
+}
+
+// writeSummary sends request, which ends by asking for a summary, and returns the reply as a
+// summary compaction.
+func (c *Client) writeSummary(ctx context.Context, ref config.ModelRef, request []Message, tools []ToolDefinition) (Message, error) {
 	discard := func(string) {}
 	reply, _, err := c.StreamChat(ctx, ref, request, tools, discard, discard)
 	if err != nil {
