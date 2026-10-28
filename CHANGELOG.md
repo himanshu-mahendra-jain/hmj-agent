@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-10-28
+
+### Fixed
+
+* A conversation too long for the model can be compacted again. When a turn passed the context window (`prompt is too long: 1020897 tokens > 1000000 maximum`), the compaction after it sent the same conversation and was refused the same way, and so was the summary request it fell back to, so every later prompt failed and the conversation could only be abandoned. A compaction or summary request refused as too long is now followed by a summary of a shortened plain-text copy: each tool input and output cut to 1KB, so a write keeps its path; the oldest messages after the first request left out past 800KB; no tools, tool calls or reasoning blocks, so no thinking signature can break. A copy still too long is halved, up to four attempts.
+* A turn the provider refuses as too long for the model is followed by a compaction even when the conversation is estimated under 400K tokens, as it can be on a model with a smaller context window. Before, such a conversation was never compacted and failed on every later prompt.
+
 ## [2.0.1] - 2026-10-26
 
 ### Fixed

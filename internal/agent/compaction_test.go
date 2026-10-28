@@ -164,7 +164,7 @@ func TestCompactionFailureLeavesTheConversation(t *testing.T) {
 			conv := largeConversation()
 			before := len(conv.Messages)
 
-			out := captureOutput(t, func() { r.StartCompaction(context.Background(), conv).Finish() })
+			out := captureOutput(t, func() { r.StartCompaction(context.Background(), conv, nil).Finish() })
 
 			if !strings.Contains(out, "[could not compact the conversation: ") || !strings.Contains(out, tc.want) {
 				t.Errorf("output does not report the failure %q:\n%s", tc.want, out)
@@ -191,7 +191,7 @@ func TestCompactionStoppedLeavesTheConversation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	out := captureOutput(t, func() { r.StartCompaction(ctx, conv).Finish() })
+	out := captureOutput(t, func() { r.StartCompaction(ctx, conv, nil).Finish() })
 
 	if strings.Contains(out, "could not compact") || !strings.Contains(out, "compaction stopped") {
 		t.Errorf("a stopped compaction was not reported as stopped: %q", out)
@@ -214,7 +214,7 @@ func TestCompactionWarnsWhenHistoryIsNotKept(t *testing.T) {
 	}
 	conv.HistoryPath = filepath.Join("file", "c.jsonl")
 
-	out := captureOutput(t, func() { r.StartCompaction(context.Background(), conv).Finish() })
+	out := captureOutput(t, func() { r.StartCompaction(context.Background(), conv, nil).Finish() })
 
 	if !strings.Contains(out, "[compacted the conversation:") || !strings.Contains(out, "[the earlier turns were not kept for /history:") {
 		t.Errorf("output should report the compaction and the lost turns:\n%s", out)
@@ -237,7 +237,7 @@ func TestNoCompactionUnderTheLimit(t *testing.T) {
 	}
 	conv.SetPromptTokens(session.CompactAtTokens - 100)
 
-	if c := r.StartCompaction(context.Background(), conv); c != nil {
+	if c := r.StartCompaction(context.Background(), conv, nil); c != nil {
 		c.Finish()
 		t.Error("a conversation under the limit was compacted")
 	}
@@ -261,12 +261,56 @@ func TestHaltedToolRoundOverTheLimitIsCompacted(t *testing.T) {
 			ToolCalls: []chat.ToolCall{{ID: "call_9", Type: "function", Function: chat.ToolCallFunction{Name: "read_file", Arguments: `{"path":"x"}`}}}},
 		chat.Message{Role: "tool", ToolCallID: "call_9", Content: session.CancelledToolResult})
 
-	captureOutput(t, func() { r.StartCompaction(context.Background(), conv).Finish() })
+	captureOutput(t, func() { r.StartCompaction(context.Background(), conv, nil).Finish() })
 
 	if len(conv.Messages) != 2 || conv.Messages[1].CompactionBlock() == nil || !strings.Contains(conv.Messages[1].CompactionBlock().Data, "ENC") {
 		t.Fatalf("conversation after compaction = %+v, want the system prompt and the compacted window", conv.Messages)
 	}
 	if req := p.Requests()[0]; !strings.Contains(req, "call_9") || !strings.Contains(req, session.CancelledToolResult) {
 		t.Errorf("the compaction request should carry the halted round:\n%s", req)
+	}
+}
+
+// TestTooLongTurnIsCompactedUnderTheLimit checks that a turn the provider refused as too long for
+// the model is followed by a compaction even when the estimate is under the limit, as on a model
+// with a smaller context window, and that a turn that failed otherwise is not.
+func TestTooLongTurnIsCompactedUnderTheLimit(t *testing.T) {
+	t.Chdir(t.TempDir())
+	tooLong := &chat.StatusError{Code: http.StatusBadRequest, Body: "context_length_exceeded: Your input exceeds the context window of this model."}
+	for _, tc := range []struct {
+		name    string
+		turnErr error
+		want    bool
+	}{
+		{"refused as too long", fmt.Errorf("stream: %w", tooLong), true},
+		{"failed otherwise", &chat.StatusError{Code: http.StatusBadRequest, Body: "invalid_request_error: bad tool schema"}, false},
+		{"ended normally", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newScriptedProvider(t)
+			cfg := p.config()
+			r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
+			conv := largeConversation()
+			conv.SetPromptTokens(200_000)
+
+			out := captureOutput(t, func() { r.StartCompaction(context.Background(), conv, tc.turnErr).Finish() })
+
+			if conv.IsCompacted() != tc.want || strings.Contains(out, "[compacted the conversation:") != tc.want {
+				t.Errorf("compacted = %v, want %v; output:\n%s", conv.IsCompacted(), tc.want, out)
+			}
+		})
+	}
+
+	// A conversation holding only a compaction has nothing to compact, even after a refusal.
+	p := newScriptedProvider(t)
+	cfg := p.config()
+	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
+	conv := &session.Conversation{ID: "1", Model: mockModel, Messages: []chat.Message{
+		{Role: "system", Content: "system"},
+		{Role: "assistant", Blocks: []chat.Block{{Type: chat.BlockSummary, Text: "summary"}}},
+	}}
+	if c := r.StartCompaction(context.Background(), conv, tooLong); c != nil {
+		c.Finish()
+		t.Error("a conversation holding only a compaction was compacted again")
 	}
 }

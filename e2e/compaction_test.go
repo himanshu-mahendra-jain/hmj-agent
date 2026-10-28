@@ -110,3 +110,63 @@ func TestFailedCompactionKeepsHistory(t *testing.T) {
 	}
 	s.Quit()
 }
+
+// A conversation the provider finds too long to compact whole is summarized from a shortened
+// copy instead, and the next turn starts from that summary.
+func TestTooLongConversationIsCompactedFromAShortenedCopy(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t)
+	_, s := start(t, p)
+	p.Queue(sayWithPrompt("answer 1", overLimit), say("SHORT SUMMARY"), say("answer 2"))
+	p.QueueCompact(httpError(400, `{"error":{"message":"Your input exceeds the context window of this model.","type":"invalid_request_error","code":"context_length_exceeded"}}`))
+	s.Type("question 1\r")
+	s.Expect("answer 1")
+	s.ExpectPrompt()
+
+	s.Type("question 2\r")
+	s.Expect("[compacted the conversation:")
+	s.Expect("answer 2")
+	s.ExpectPrompt()
+
+	reqs := p.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("%d requests, want 4: the turn, the compact request, the shortened summary request and the next turn", len(reqs))
+	}
+	if summaryReq := reqs[2]; !strings.Contains(summaryReq, "shortened transcript") || !strings.Contains(summaryReq, "question 1") {
+		t.Errorf("the request after the refused compaction should be the shortened summary request:\n%s", summaryReq)
+	}
+	if turnReq := p.LastRequest(); !strings.Contains(turnReq, "SHORT SUMMARY") || !strings.Contains(turnReq, `"question 2"`) ||
+		strings.Contains(turnReq, `"question 1"`) {
+		t.Errorf("the next turn should carry the summary and the new prompt only:\n%s", turnReq)
+	}
+	s.Quit()
+}
+
+// A turn the provider refuses as too long for the model is followed by a compaction even when the
+// conversation looks small, as on a model with a smaller context window, so the next turn fits.
+func TestTooLongTurnIsCompactedUnderTheLimit(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t)
+	_, s := start(t, p)
+	p.Queue(say("answer 1"),
+		httpError(400, `{"error":{"message":"Your input exceeds the context window of this model.","type":"invalid_request_error","code":"context_length_exceeded"}}`),
+		say("answer 3"))
+	p.QueueCompact(compactedWindow("WINDOW-AFTER-REFUSAL"))
+	s.Type("question 1\r")
+	s.Expect("answer 1")
+	s.ExpectPrompt()
+
+	s.Type("question 2\r")
+	s.Expect("context window")
+	s.ExpectPrompt()
+
+	s.Type("question 3\r")
+	s.Expect("[compacted the conversation:")
+	s.Expect("answer 3")
+	s.ExpectPrompt()
+	if turnReq := p.LastRequest(); !strings.Contains(turnReq, "WINDOW-AFTER-REFUSAL") || strings.Contains(turnReq, `"question 1"`) ||
+		!strings.Contains(turnReq, `"question 3"`) {
+		t.Errorf("the turn after the refusal should carry the compacted window and the new prompt only:\n%s", turnReq)
+	}
+	s.Quit()
+}
