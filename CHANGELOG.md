@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-11-10
+
+### Fixed
+
+* One long turn can no longer fill the model's context window. A conversation was compacted only after a turn ended, so a turn that ran for hundreds of steps with no background job ending it grew until the provider refused it (`prompt is too long: 1001634 tokens > 1000000 maximum`) and stopped mid-work. A turn past 400K tokens is now compacted between two of its steps: the compaction replaces the turn's own messages too, as Claude's thinking signatures require, and a note tells the model to go on from its summary. A resumed transcript does not show that note. A failed compaction is reported, the turn goes on, and it is tried again once the conversation has grown by 100K tokens.
+* A step the provider refuses as too long, with no large tool result of its own left to remove, now has the conversation compacted and is sent again in the same turn. Before the model has replied in the turn, only what came before the prompt is compacted, so the prompt is sent as written. Before, the turn failed, and the compaction after it helped only the next prompt.
+
 ## [2.0.2] - 2026-10-28
 
 ### Fixed

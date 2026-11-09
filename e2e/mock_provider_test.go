@@ -193,6 +193,12 @@ func sayWithPrompt(text string, inputTokens int) reply {
 
 // callTool replies with one function call to the named tool.
 func callTool(name string, args map[string]any) reply {
+	return callToolWithPrompt(name, args, 100)
+}
+
+// callToolWithPrompt replies with one function call to the named tool and reports a prompt of
+// inputTokens, so a test can make a turn as large as it needs.
+func callToolWithPrompt(name string, args map[string]any, inputTokens int) reply {
 	return func(w http.ResponseWriter, r *http.Request) {
 		argJSON, err := json.Marshal(args)
 		if err != nil {
@@ -208,7 +214,7 @@ func callTool(name string, args map[string]any) reply {
 			"type": "response.output_item.done", "output_index": 0,
 			"item": map[string]any{"id": "item_" + name, "type": "function_call", "call_id": id, "name": name, "arguments": string(argJSON)},
 		})
-		completed(w)
+		completedWith(w, inputTokens)
 	}
 }
 

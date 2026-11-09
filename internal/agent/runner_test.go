@@ -1319,9 +1319,10 @@ func TestAgentRunMultiTurnWriteThenReadBack(t *testing.T) {
 	}
 }
 
-// A turn is never compacted while it runs, however large the conversation. Once it has ended
-// over the limit, the conversation is compacted with the provider's compact endpoint, and the next
-// turn carries the compacted window in place of the history.
+// A turn that answers in one step has no point between steps to compact at, however large the
+// conversation. Once it has ended over the limit, the conversation is compacted with the
+// provider's compact endpoint, and the next turn carries the compacted window in place of the
+// history. (A turn of several steps is compacted between them: mid_turn_compaction_test.go.)
 func TestCompactionRunsAfterTheTurnOverTheLimit(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var mu sync.Mutex

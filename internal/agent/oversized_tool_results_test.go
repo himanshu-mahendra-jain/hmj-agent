@@ -79,18 +79,28 @@ func TestOverflowRemovesTheLargeResultAndRetries(t *testing.T) {
 	}
 }
 
-// When the request is still too long with nothing large left to remove, the error is reported,
-// and the conversation keeps the removal, so the saved conversation can be sent again.
+// When the request is still too long with nothing large left to remove, and the conversation
+// cannot be compacted either, the error is reported, and the conversation keeps the removal, so
+// the saved conversation can be sent again.
 func TestOverflowThatPersistsKeepsTheRemoval(t *testing.T) {
-	p, conv, _, err := runBigToolTurn(t, 100*1024, overflowReply, overflowReply)
+	t.Chdir(t.TempDir())
+	p := newScriptedProvider(t, toolCallReply("big", "{}"), overflowReply, overflowReply)
+	p.QueueCompact(statusReply(http.StatusUnauthorized, `{"error":{"message":"bad key"}}`))
+	cfg := p.config()
+	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, []tools.Tool{bigTool{size: 100 * 1024}})
+	r.Client.RetryConfig = chat.RetryConfig{}
+	conv := &session.Conversation{ID: "1", Model: mockModel}
+	var err error
+	captureOutput(t, func() { err = r.Run(context.Background(), conv, "read the big thing") })
+
 	if !chat.IsContextOverflow(err) {
 		t.Fatalf("Run returned %v, want the overflow error", err)
 	}
 	if got := toolResult(t, conv); !strings.HasPrefix(got, "[the big result (100 KB) was removed") {
 		t.Errorf("tool result is %q", got[:min(len(got), 200)])
 	}
-	if n := len(p.Requests()); n != 3 {
-		t.Errorf("%d requests, want 3: one removal, then no large result is left", n)
+	if n, c := len(p.Requests()), compactRequests(p); n != 4 || c != 1 {
+		t.Errorf("%d requests (%d compact), want 4: one removal, then a compaction that fails", n, c)
 	}
 	if last := conv.Messages[len(conv.Messages)-1]; !strings.HasPrefix(last.Content, "[error: ") {
 		t.Errorf("turn ended with %+v", last)

@@ -37,6 +37,10 @@ func PrintConversationHistory(conv *session.Conversation) {
 		case "system":
 			continue
 		case "user":
+			// hmj wrote it after compacting mid-turn, which the compaction line already says.
+			if m.Content == session.ContinueAfterCompaction {
+				continue
+			}
 			// As in a turn: the prompt, then the first line of each job notice it carried, which
 			// brings its own blank line
 			notices, input := session.SplitJobNotices(m.Content)

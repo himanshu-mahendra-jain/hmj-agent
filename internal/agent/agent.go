@@ -132,6 +132,7 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 	defer stopHaltListener()
 
 	r.beginTurn(conv, withJobNotices(notices, input))
+	promptAt := len(conv.Messages) - 1 // the turn's user message
 	r.checkpoint(conv)
 
 	// Every block the turn prints brings the blank line before it, so nothing is printed here
@@ -146,6 +147,8 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 
 	stats := &turnStats{turnStart: time.Now()}
 	var prevRun toolRun // the turn's latest tool call and its result
+	// After a compaction fails during the turn, the next waits until the estimate reaches this.
+	compactRetryAt := 0
 	// Every way out of the turn passes here, so it also marks when the conversation last changed.
 	endTurn := func() {
 		conv.UpdatedAt = time.Now()
@@ -182,6 +185,18 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 			fmt.Println(theme.Caution(removedResultNotice(name, size)))
 			assistantMsg, usage, err = r.streamStep(runCtx, conv, spinner)
 			logging.L().Warn("tool result removed", "name", name, "bytes", size, "retry_ok", err == nil)
+		}
+		// Still too long with no large result of this step left: the conversation itself fills the
+		// window, so it is compacted and the step sent again. Before the model has replied, only
+		// what came before the prompt is, so the prompt is sent as the user wrote it.
+		if chat.IsContextOverflow(err) && runCtx.Err() == nil {
+			upTo := len(conv.Messages)
+			if step == 1 {
+				upTo = promptAt
+			}
+			if conv.CanCompactBefore(upTo) && r.compactMidTurn(runCtx, conv, spinner, upTo) {
+				assistantMsg, usage, err = r.streamStep(runCtx, conv, spinner)
+			}
 		}
 		stats.add(usage)
 		spinner.SetStatus(stats.liveStatus()) // this step's tools show its usage too
@@ -264,6 +279,12 @@ func (r *Runner) Run(ctx context.Context, conv *session.Conversation, input stri
 				return nil
 			}
 		}
+		// A turn past the limit is compacted between its steps, so one long turn cannot fill the
+		// model's context window.
+		if conv.NeedsCompaction() && conv.EstimateTokens() >= compactRetryAt && runCtx.Err() == nil &&
+			!r.compactMidTurn(runCtx, conv, spinner, len(conv.Messages)) {
+			compactRetryAt = conv.EstimateTokens() + midTurnRetryTokens
+		}
 		r.checkpoint(conv)
 	}
 }
@@ -345,7 +366,7 @@ func printRefusalNotice(category string) {
 // conversation and appends the user's input. The system prompt, which names the scratch
 // directory, is set only when the conversation has no user message yet, so a later change to it
 // never invalidates the cached prefix or the reasoning blocks. The history is otherwise only
-// appended to; compaction happens between turns (see StartCompaction).
+// appended to, except by compaction (see StartCompaction and compactMidTurn).
 func (r *Runner) beginTurn(conv *session.Conversation, input string) {
 	scratch := conv.ScratchDir
 	if scratch != "" && os.MkdirAll(scratch, 0o700) != nil {
