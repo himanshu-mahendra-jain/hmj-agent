@@ -65,6 +65,24 @@ func TestNeedsCompactionNotForACompactionAlone(t *testing.T) {
 	}
 }
 
+// TestCanCompactBefore checks which leading parts of a conversation have something to compact:
+// not the system prompt alone, nor a lone compaction, nor a range past the end.
+func TestCanCompactBefore(t *testing.T) {
+	conv := chatTurns(1) // system, question 1, answer 1
+	conv.Messages = append(conv.Messages, chat.Message{Role: "user", Content: "question 2"})
+	for upTo, want := range map[int]bool{0: false, 1: false, 2: true, 3: true, 4: true, 5: false} {
+		if got := conv.CanCompactBefore(upTo); got != want {
+			t.Errorf("CanCompactBefore(%d) = %v, want %v", upTo, got, want)
+		}
+	}
+
+	compacted := &Conversation{Messages: []chat.Message{{Role: "system", Content: "s"}, summaryMessage("summary"),
+		{Role: "user", Content: "next"}}}
+	if compacted.CanCompactBefore(2) || !compacted.CanCompactBefore(3) {
+		t.Error("a lone compaction should have nothing to compact, and one followed by a prompt something")
+	}
+}
+
 // TestApplyCompactionReplacesTheCompactedMessages checks that the compaction takes the place of
 // the messages it was made from, right after the system prompt, that messages appended since are
 // kept, that the reported size is forgotten, and that the conversation is marked as changed.

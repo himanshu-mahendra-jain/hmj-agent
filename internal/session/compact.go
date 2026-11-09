@@ -9,10 +9,15 @@ import (
 	"hmj-agent/v2/internal/chat"
 )
 
-// CompactAtTokens is the context size, in tokens, above which a conversation is compacted once
-// its turn has ended. A turn is never compacted while it runs, even past this size. A turn the
-// provider refused as too long for the model is followed by a compaction whatever the size.
+// CompactAtTokens is the context size, in tokens, above which a conversation is compacted: once
+// its turn has ended, or between two steps of a turn that runs past it. A turn the provider
+// refused as too long for the model is followed by a compaction whatever the size.
 const CompactAtTokens = 400_000
+
+// ContinueAfterCompaction is the user message that follows a compaction made while a turn runs.
+// The compaction replaced the turn's own messages too, so the model is told to go on from its
+// summary.
+const ContinueAfterCompaction = "[The conversation was compacted while you were working on this request. Continue the work from your summary above.]"
 
 // ErrCompactionOutdated is returned by ApplyCompaction when the conversation no longer starts
 // with the messages the compaction was made from.
@@ -54,8 +59,18 @@ func (c *Conversation) NeedsCompaction() bool {
 // CanCompact reports whether the conversation has something to compact: messages after its system
 // prompt other than a compaction alone.
 func (c *Conversation) CanCompact() bool {
-	rest := c.Messages[c.historyStart():]
-	return len(rest) > 1 || (len(rest) == 1 && rest[0].CompactionBlock() == nil)
+	return c.CanCompactBefore(len(c.Messages))
+}
+
+// CanCompactBefore reports whether the first upTo messages have something to compact, as
+// CanCompact does for all of them.
+func (c *Conversation) CanCompactBefore(upTo int) bool {
+	start := c.historyStart()
+	if upTo <= start || upTo > len(c.Messages) {
+		return false
+	}
+	rest := c.Messages[start:upTo]
+	return len(rest) > 1 || rest[0].CompactionBlock() == nil
 }
 
 // IsCompacted reports whether the conversation has been compacted: its history starts with a

@@ -17,7 +17,7 @@ func TestFailedStepStillPrintsTheTurnFooter(t *testing.T) {
 	t.Chdir(t.TempDir())
 	p := newScriptedProvider(t,
 		toolCallReply("teleport", `{"to":"mars"}`),
-		statusReply(http.StatusBadRequest, `{"error":{"message":"prompt is too long"}}`))
+		statusReply(http.StatusBadRequest, `{"error":{"message":"tool schema is invalid"}}`))
 	cfg := p.config()
 	r := NewRunnerWithTools(chat.NewClient(cfg), cfg, nil)
 	conv := &session.Conversation{ID: "1", Model: mockModel}
@@ -27,7 +27,7 @@ func TestFailedStepStillPrintsTheTurnFooter(t *testing.T) {
 	captureStderr(t, func() {
 		out = captureOutput(t, func() { err = r.Run(context.Background(), conv, "go to mars") })
 	})
-	if err == nil || !strings.Contains(err.Error(), "prompt is too long") {
+	if err == nil || !strings.Contains(err.Error(), "tool schema is invalid") {
 		t.Fatalf("Run err = %v, want the provider's message", err)
 	}
 	for _, want := range []string{"tokens:", "10 input", "2 output"} {

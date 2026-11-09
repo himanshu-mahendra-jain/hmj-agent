@@ -11,7 +11,8 @@ const overLimit = 450_000
 
 // Turns are never compacted by count: a conversation stays whole until it is over the limit.
 // Then, once the turn has ended, it is compacted with the provider's compact endpoint while the
-// next prompt is typed, and the next turn starts from the compacted window.
+// next prompt is typed, and the next turn starts from the compacted window. (A turn still running
+// past the limit is compacted between its steps: TestLongTurnIsCompactedBetweenSteps.)
 func TestConversationIsCompactedOnlyOverTheLimit(t *testing.T) {
 	t.Parallel()
 	p := newProvider(t)
@@ -81,6 +82,42 @@ func TestConversationIsCompactedOnlyOverTheLimit(t *testing.T) {
 	s.Quit()
 }
 
+// A turn that runs past the limit is compacted between its steps, so one long turn cannot fill the
+// model's context window: the next step carries the compacted window and the note to go on. A
+// resumed transcript shows the compaction, not that note as a prompt.
+func TestLongTurnIsCompactedBetweenSteps(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t)
+	e, s := start(t, p)
+	p.Queue(callToolWithPrompt("run_command", map[string]any{"command": "echo step-one"}, overLimit), say("all done"))
+	p.QueueCompact(compactedWindow("WINDOW-MID-TURN"))
+	s.Type("do the long job\r")
+	s.Expect("[compacted the conversation: ~450,")
+	s.Expect("all done")
+	s.ExpectPrompt()
+
+	reqs := p.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("%d requests, want 3: the first step, the compact request and the next step", len(reqs))
+	}
+	if compactReq := reqs[1]; !strings.Contains(compactReq, "step-one") {
+		t.Errorf("the compact request should carry the turn so far:\n%s", compactReq)
+	}
+	if stepReq := p.LastRequest(); !strings.Contains(stepReq, "WINDOW-MID-TURN") || !strings.Contains(stepReq, "compacted while you were working") ||
+		strings.Contains(stepReq, `"do the long job"`) {
+		t.Errorf("the next step should carry the compacted window and the note only:\n%s", stepReq)
+	}
+	s.Quit()
+
+	s = e.Start()
+	s.Expect("[the earlier conversation was compacted]")
+	s.Expect("all done")
+	if screen := s.Screen(); strings.Contains(screen, "compacted while you were working") {
+		t.Errorf("the resumed transcript shows the note to the model:\n%s", screen)
+	}
+	s.Quit()
+}
+
 // A compact request that fails leaves the conversation as it was: the user is told, the next turn
 // carries the whole history, and compaction is tried again after it.
 func TestFailedCompactionKeepsHistory(t *testing.T) {
@@ -142,31 +179,28 @@ func TestTooLongConversationIsCompactedFromAShortenedCopy(t *testing.T) {
 	s.Quit()
 }
 
-// A turn the provider refuses as too long for the model is followed by a compaction even when the
-// conversation looks small, as on a model with a smaller context window, so the next turn fits.
+// A step the provider refuses as too long for the model has the conversation compacted, even when
+// it looks small, as on a model with a smaller context window, and is sent again in the same turn.
+// The turn had no reply yet, so its prompt is sent as the user wrote it.
 func TestTooLongTurnIsCompactedUnderTheLimit(t *testing.T) {
 	t.Parallel()
 	p := newProvider(t)
 	_, s := start(t, p)
 	p.Queue(say("answer 1"),
 		httpError(400, `{"error":{"message":"Your input exceeds the context window of this model.","type":"invalid_request_error","code":"context_length_exceeded"}}`),
-		say("answer 3"))
+		say("answer 2"))
 	p.QueueCompact(compactedWindow("WINDOW-AFTER-REFUSAL"))
 	s.Type("question 1\r")
 	s.Expect("answer 1")
 	s.ExpectPrompt()
 
 	s.Type("question 2\r")
-	s.Expect("context window")
-	s.ExpectPrompt()
-
-	s.Type("question 3\r")
 	s.Expect("[compacted the conversation:")
-	s.Expect("answer 3")
+	s.Expect("answer 2")
 	s.ExpectPrompt()
 	if turnReq := p.LastRequest(); !strings.Contains(turnReq, "WINDOW-AFTER-REFUSAL") || strings.Contains(turnReq, `"question 1"`) ||
-		!strings.Contains(turnReq, `"question 3"`) {
-		t.Errorf("the turn after the refusal should carry the compacted window and the new prompt only:\n%s", turnReq)
+		!strings.Contains(turnReq, `"question 2"`) {
+		t.Errorf("the step sent again should carry the compacted window and the prompt only:\n%s", turnReq)
 	}
 	s.Quit()
 }
