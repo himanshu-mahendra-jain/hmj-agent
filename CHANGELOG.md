@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.4] - 2026-11-11
+
+### Security
+
+* Build with Go 1.27.4, which fixes GO-2026-6859 in `net/http`.
+
+### Dependencies
+
+* Bump `golang.org/x/sys` from 0.49.0 to 0.50.0.
+* Bump `golang.org/x/term` from 0.47.0 to 0.48.0.
+
 ## [2.0.3] - 2026-11-10
 
 ### Fixed
