@@ -256,8 +256,9 @@ func TestGeminiGenerationConfig(t *testing.T) {
 	}{
 		{"low effort", config.Model{ID: "m", Effort: "low", MaxOutputTokens: 500}, `"generation_config":{"max_output_tokens":500,"thinking_level":"low","thinking_summaries":"auto"}`, ""},
 		{"medium effort", config.Model{ID: "m", Effort: "medium"}, `"generation_config":{"thinking_level":"medium","thinking_summaries":"auto"}`, "max_output_tokens"},
-		{"other effort maps to high", config.Model{ID: "m", Effort: "max"}, `"generation_config":{"thinking_level":"high","thinking_summaries":"auto"}`, "max_output_tokens"},
-		{"none maps to minimal", config.Model{ID: "m", Effort: "none"}, `"generation_config":{"thinking_level":"minimal","thinking_summaries":"auto"}`, ""},
+		{"xhigh is kept", config.Model{ID: "m", Effort: "xhigh"}, `"generation_config":{"thinking_level":"xhigh","thinking_summaries":"auto"}`, "max_output_tokens"},
+		{"max maps to xhigh", config.Model{ID: "m", Effort: "max"}, `"generation_config":{"thinking_level":"xhigh","thinking_summaries":"auto"}`, "max_output_tokens"},
+		{"none maps to low", config.Model{ID: "m", Effort: "none"}, `"generation_config":{"thinking_level":"low","thinking_summaries":"auto"}`, "minimal"},
 		{"unset", config.Model{ID: "m"}, `"generation_config":{"thinking_summaries":"auto"}`, "thinking_level"},
 	}
 	for _, tc := range tests {

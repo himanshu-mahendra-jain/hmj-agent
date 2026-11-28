@@ -47,19 +47,20 @@ type geminiGenerationConfig struct {
 }
 
 // geminiThinkingLevel maps a configured effort onto the Interactions thinking
-// levels (minimal, low, medium, high). low and medium keep their level, and
-// high, xhigh and max all use high. It returns "" when no effort is configured,
-// which leaves the model's default level in place.
+// levels. low, medium, high and xhigh keep their level, and max uses xhigh, the
+// highest Gemini has. none and minimal use low: minimal is not supported on
+// Gemini 4 models, while every Gemini text model takes low.
+// Only Gemini 4 Hydrogen and Neon take xhigh; on other models the request is
+// rejected and the model's effort should be set to high. It returns "" when no
+// effort is configured, which leaves the model's default level in place.
 func geminiThinkingLevel(effort string) string {
 	switch effort {
-	case "":
-		return ""
-	case "low", "medium":
-		return effort
 	case "none", "minimal":
-		return "minimal"
+		return "low"
+	case "max":
+		return "xhigh"
 	default:
-		return "high"
+		return effort
 	}
 }
 

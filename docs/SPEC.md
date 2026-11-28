@@ -511,7 +511,7 @@ The system prompt tells the model to use the file tools rather than shell `sed`/
 | Setting | Anthropic | Responses | Chat Completions | Gemini |
 |---|---|---|---|---|
 | `maxOutputTokens` | always sent, default 64000 | `max_output_tokens` if set | `max_tokens` if set; `max_completion_tokens` for api.openai.com and Azure OpenAI | `max_output_tokens` if set |
-| `effort` | `output_config.effort`, none/minimal → `low` (sent even when thinking is off) | `reasoning.effort` | `reasoning_effort` | low/medium kept; none, minimal → `minimal`; high, xhigh, max → `high` |
+| `effort` | `output_config.effort`, none/minimal → `low` (sent even when thinking is off) | `reasoning.effort` | `reasoning_effort` | low/medium/high/xhigh kept; none, minimal → `low`; max → `xhigh` |
 | `thinking: adaptive` | `thinking: {type: adaptive, display: summarized}` | reasoning summary + encrypted content | — | thinking on |
 | `thinking: off` | no thinking field | no reasoning fields (`store: false` is always sent) | — | — |
 | `speed: fast` | `speed: "fast"`; footer reports the steps that ran fast | ignored | ignored | ignored |

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.5] - 2026-11-28
+
+### Changed
+
+* Gemini effort follows the Gemini 4 thinking levels. `none` and `minimal` are sent as `low`, since Gemini 4 models reject `minimal`. `xhigh` is now sent as `xhigh` and `max` as `xhigh`, where both were `high`; only Gemini 4 Hydrogen and Neon take `xhigh`, so set `high` on other Gemini models.
+* The example config uses `gemini-4-hydrogen` at `high` effort.
+
 ## [2.0.4] - 2026-11-11
 
 ### Security

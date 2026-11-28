@@ -3,8 +3,8 @@ package chat
 import "hmj-agent/v2/internal/config"
 
 // EffortLabel says what reasoning effort requests to model over provider carry: the configured
-// level; "default" when none is set, leaving it to the provider; how Gemini narrows xhigh and
-// max to high and Anthropic or Gemini map none and minimal; or that the level is not sent, with
+// level; "default" when none is set, leaving it to the provider; how Gemini maps max to xhigh
+// and Anthropic or Gemini map none and minimal; or that the level is not sent, with
 // thinking off on a protocol that sends effort only alongside reasoning. A provider whose
 // protocol hmj finds by probing is shown as configured.
 func EffortLabel(provider config.Provider, model config.Model) string {

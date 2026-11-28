@@ -447,7 +447,7 @@ func TestGeminiInteractionsURL(t *testing.T) {
 }
 
 func TestGeminiThinkingLevel(t *testing.T) {
-	tests := map[string]string{"": "", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
+	tests := map[string]string{"": "", "none": "low", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "xhigh"}
 	for effort, want := range tests {
 		if got := geminiThinkingLevel(effort); got != want {
 			t.Errorf("geminiThinkingLevel(%q) = %q, want %q", effort, got, want)

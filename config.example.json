@@ -19,7 +19,8 @@
       "apiKey": "$GEMINI_API_KEY",
       "models": [
         {
-          "id": "gemini-3.8-flash"
+          "id": "gemini-4-hydrogen",
+          "effort": "high"
         }
       ]
     },
